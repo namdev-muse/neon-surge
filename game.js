@@ -1,4 +1,4 @@
-// Neon Surge v0.1.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.2.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
@@ -158,8 +158,17 @@ function showScreen(id) {
   el.classList.remove('hidden');
   // Re-trigger the pop-in animation.
   el.classList.remove('open'); void el.offsetWidth; el.classList.add('open');
-  const btn = el.querySelector('.btn.primary, .btn');
-  if (btn) btn.focus();
+  // Focus one control per screen (game-ui-ux). On the sector select the
+  // first enabled sector card is the natural focus: focusing the Back
+  // button (the first .btn in the overlay) scrolled the 12-card panel so
+  // the first row clipped off the top at 1280x720.
+  const focusEl = id === 'sectors'
+    ? el.querySelector('.level-card:not(:disabled)')
+    : el.querySelector('.btn.primary, .btn');
+  if (focusEl) focusEl.focus();
+  // Keep the panel at the top after the focus scroll.
+  const panel = el.querySelector('.panel');
+  if (panel) panel.scrollTop = 0;
 }
 function pushScreen(id) { screenStack.push(id); showScreen(id); }
 function popScreen() {
@@ -182,8 +191,8 @@ function refreshMenuBest() {
   const cleared = Object.keys(save.best).length;
   const bestScore = Math.max(0, ...Object.values(save.best).map((b) => b.score));
   $('menu-best').textContent = cleared === 0
-    ? 'No sectors cleared yet — three sectors of bullet storms await.'
-    : `${cleared}/3 sectors cleared · best score ${bestScore.toLocaleString()}.`;
+    ? 'No sectors cleared yet — twelve sectors of bullet storms await.'
+    : `${cleared}/${SECTORS.length} sectors cleared · best score ${bestScore.toLocaleString()}.`;
 }
 function refreshSectorSelect() {
   const grid = $('sector-grid');

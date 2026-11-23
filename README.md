@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.1.0 — M1 core, 3 sectors)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v0.2.0 — M2 sector craft, 12 sectors)
 
 ## How to play
 
@@ -24,13 +24,22 @@ Absorbing builds charge (+6 per bullet) and score (+10). A nova costs 65
 charge. Clearing a sector scores a time bonus plus a hull bonus. Your best
 score per sector is saved; clearing a sector unlocks the next.
 
-## Sectors (M1 ships 3)
+## Sectors (12 hand-crafted)
 
 | # | Sector | Identity |
 |---|--------|----------|
 | 1 | First Light | Slow cyan bullets first; the first magenta wave is telegraphed so the opening teaches the swap. Drifters, weavers, a sniper, a spinner. |
-| 2 | Crossfire | Magenta-heavy mixed fire from both sides; two spinners firing rings at once. |
+| 2 | Crossfire | Magenta-heavy mixed fire from both sides; two spinners firing rings at once. Opening softened in M2 by staggered spawns. |
 | 3 | Vortex | The densest storm: three spinners, three snipers, crossing weaver spreads. |
+| 4 | Twin Currents | Paired weaver streams cross the arena — cyan from the left, magenta from the right. |
+| 5 | Sniper's Gallery | Sniper-heavy: six snipers park at the edges and telegraph every shot; drifters fill the gaps. |
+| 6 | Ring Road | Spinner-heavy: five spinners, rings everywhere. No single polarity is safe inside a ring. |
+| 7 | Crosswind | Weaver-heavy: weavers pour in from every side at once. Keep moving across the wind. |
+| 8 | Magenta Tide | Magenta flood with cyan seams — live in magenta, dip into cyan only to feed the nova. |
+| 9 | The Spiral | Spinners stack their rings into a spiral; absorb the streams between the rings. |
+| 10 | Ambush Alley | Snipers and spinners trade ambushes down the alley; never sit in one lane. |
+| 11 | Storm Surge | Everything at once, faster than ever — three-enemy waves, no safe lane. |
+| 12 | The Heart | The final gauntlet: every enemy, every pattern, at full speed. |
 
 ## Enemies
 
@@ -43,9 +52,9 @@ score per sector is saved; clearing a sector unlocks the next.
 
 Every sector is verified by bot harness (`node tests/bot.js`):
 
-- A **decision bot** that swaps polarity and novas with real decisions clears all 3 sectors.
-- A **no-swap bot** (same movement and nova play, never swaps) loses all 3.
-- A **sit-still bot** and a **random masher** lose all 3.
+- A **decision bot** that swaps polarity and novas with real decisions clears all 12 sectors.
+- A **no-swap bot** (same movement and nova play, never swaps) loses all 12.
+- A **sit-still bot** and a **random masher** lose all 12.
 
 If a no-swap bot clears a sector, that sector is not done.
 
@@ -62,9 +71,9 @@ unlock. It is deliberately not shown in the UI.
 
 ```sh
 node --check game.js && node --check physics.js
-npm run smoke        # 154 assertions: sectors, movement (screen-space),
+npm run smoke        # 264 assertions: sectors, movement (screen-space),
                      # swap, absorb, damage, nova, enemy fire, saves
-npm run bot          # anti-slop gates on all 3 sectors
+npm run bot          # anti-slop gates on all 12 sectors
 npm run render-check # headless Chromium: menu, demo, screen-space movement,
                      # swap, autopilot clear, pause, ?sector=3, zero console errors
 npm run screenshots  # size sweep: 1280x720, 2560x1080, 1080x2340 (inspect by eye)
