@@ -1,10 +1,10 @@
-// Neon Surge v0.1.0 — headless browser render check.
+// Neon Surge v0.2.0 — headless browser render check.
 // Serves the game dir over local HTTP, loads it in a headless browser, and
 // asserts the M1 core, by hook and by eye:
 //   - the menu renders over a LIVE demo (the attract-mode bot actually
 //     plays sector 1 behind the menu — the demo player moves), with no
 //     version/engine text anywhere the player can see, one clear primary
-//     Play action, and 3 sector cards
+//     Play action, and 12 sector cards
 //   - Play starts sector 1 with the HUD; movement is asserted in SCREEN
 //     space (left moves left on screen, right moves right — the Drift M2
 //     lesson), and the polarity swap flips the HUD chip + wisp colour
@@ -116,9 +116,9 @@ try {
     const b = document.getElementById('btn-play');
     return b && !b.classList.contains('hidden') && b.textContent.includes('Play');
   }));
-  check('no version text on the player-facing menu', !/v0\.1\.0|0\.1\.0/.test(menuText), menuText.slice(0, 200));
+  check('no version text on the player-facing menu', !/v0\.2\.0|0\.2\.0/.test(menuText), menuText.slice(0, 200));
   check('no engine text on the player-facing menu', !/three\.js|canvas 2d|webgl/i.test(menuText));
-  check('menu lists 3 sectors', await page.evaluate(() => window.__surge.sectors().length === 3));
+  check('menu lists 12 sectors', await page.evaluate(() => window.__surge.sectors().length === 12));
   // The demo behind the menu is actually playing: its clock advances and
   // the wisp drifts from its spawn point toward the middle of the arena.
   // (A fixed 2s position delta is flaky — the bot idles at the centre
@@ -138,10 +138,14 @@ try {
   await page.click('#btn-sectors');
   await page.waitForFunction(() => !document.getElementById('sectors').classList.contains('hidden'), null, { timeout: 5000 });
   await page.waitForTimeout(2500); // stagger pop-in (SwiftShader presents stale frames)
-  check('sector select shows 3 sector cards', await page.evaluate(() => document.querySelectorAll('#sector-grid .level-card').length === 3));
-  check('sector 1 is unlocked, sectors 2-3 locked on a fresh save', await page.evaluate(() => {
+  check('sector select shows 12 sector cards', await page.evaluate(() => document.querySelectorAll('#sector-grid .level-card').length === 12));
+  check('sector 1 is unlocked, sectors 2-12 locked on a fresh save', await page.evaluate(() => {
     const cards = [...document.querySelectorAll('#sector-grid .level-card')];
-    return !cards[0].disabled && cards[1].disabled && cards[2].disabled;
+    return !cards[0].disabled && cards.slice(1).every((c) => c.disabled);
+  }));
+  check('sector select focuses the first sector card and starts at the top (no clipped first row)', await page.evaluate(() => {
+    const panel = document.querySelector('#sectors .panel');
+    return document.activeElement && document.activeElement.classList.contains('level-card') && panel.scrollTop === 0;
   }));
   await page.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, 'sectors-1280x720.png') });
   await page.click('#btn-sectors-back');

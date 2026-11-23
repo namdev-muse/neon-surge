@@ -1,10 +1,10 @@
-// Neon Surge v0.1.0 — bot harness: the anti-slop gate.
+// Neon Surge v0.2.0 — bot harness: the anti-slop gate.
 //   - Decision bot: real polarity-swap + nova decisions through the public
-//     stepRun input hooks. It MUST clear all 3 sectors.
+//     stepRun input hooks. It MUST clear all 12 sectors.
 //   - No-swap bot: same movement and nova play, but never swaps polarity.
-//     It MUST lose all 3 — if it clears one, that sector is not done.
-//   - Sit-still bot: no movement, no swap, no nova. It MUST lose all 3.
-//   - Random bot: random movement/swaps/novas. It MUST lose all 3.
+//     It MUST lose all 12 — if it clears one, that sector is not done.
+//   - Sit-still bot: no movement, no swap, no nova. It MUST lose all 12.
+//   - Random bot: random movement/swaps/novas. It MUST lose all 12.
 // Usage: node tests/bot.js
 import { SECTORS, simulateRun, createDecisionBot, createNoSwapBot, createSitStillBot, createRandomBot } from '../physics.js';
 
@@ -34,7 +34,7 @@ for (const sector of SECTORS) {
   const random = simulateRun(sector.id, () => createRandomBot(555 + sector.id), { maxSeconds: 120 });
   if (random.won) { failures++; console.error(`  BOT FAIL: sector ${sector.id} cleared by random bot seed 555 (SLOP)`); }
 }
-console.log('bot: second random seed checked on all 3 sectors');
+console.log(`bot: second random seed checked on all ${SECTORS.length} sectors`);
 
 if (failures > 0) { console.error(`bot: ${failures} failure(s)`); process.exit(1); }
 console.log('bot: all gates pass — decision clears everything, no-swap / sit-still / random lose everywhere');

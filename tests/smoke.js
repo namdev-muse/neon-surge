@@ -1,8 +1,8 @@
-// Neon Surge v0.1.0 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.2.0 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
-// 3-sector bot gate lives in tests/bot.js). Exit 0 when all pass.
+// 12-sector bot gate lives in tests/bot.js). Exit 0 when all pass.
 // Usage: node tests/smoke.js
 import {
   VERSION, ARENA_W, ARENA_H, DT, PLAYER_R, PLAYER_SPEED, PLAYER_ACCEL,
@@ -26,16 +26,16 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.1.0', VERSION === '0.1.0');
-check('3 sectors defined', SECTORS.length === 3);
-check('sector ids are 1..3 in order', SECTORS.every((s, i) => s.id === i + 1));
+check('physics version is 0.2.0', VERSION === '0.2.0');
+check('12 sectors defined', SECTORS.length === 12);
+check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
 check('sector names are distinct', new Set(SECTORS.map((s) => s.name)).size === SECTORS.length);
 check('sector accents are distinct', new Set(SECTORS.map((s) => s.accent)).size === SECTORS.length);
 check('sectorById finds sector 2', sectorById(2) && sectorById(2).name === 'Crossfire');
 check('sectorById returns null for 99', sectorById(99) === null);
-check('bullet speed rises across sectors (S1 < S2 < S3)', SECTORS[0].bulletSpeed < SECTORS[1].bulletSpeed && SECTORS[1].bulletSpeed < SECTORS[2].bulletSpeed);
-check('par times rise across sectors', SECTORS[0].par < SECTORS[1].par && SECTORS[1].par < SECTORS[2].par);
+check('bullet speed rises across all 12 sectors', SECTORS.every((s, i) => i === 0 || s.bulletSpeed > SECTORS[i - 1].bulletSpeed));
+check('par times rise across all 12 sectors', SECTORS.every((s, i) => i === 0 || s.par > SECTORS[i - 1].par));
 
 // --- sector validity ---
 for (const def of SECTORS) {
@@ -51,6 +51,10 @@ for (const def of SECTORS) {
   check(`sector ${def.id} has at least one spinner`, def.spawns.some((s) => s.type === 'spinner'));
   check(`sector ${def.id} has at least one sniper`, def.spawns.some((s) => s.type === 'sniper'));
   check(`sector ${def.id} last spawn is before its par`, def.spawns[def.spawns.length - 1].t < def.par);
+  // No dead space: consecutive waves are never more than 4s apart, so the
+  // arena never goes quiet between spawns (the nova pull-forward in
+  // physics.js covers the post-nova case).
+  check(`sector ${def.id} has no spawn gap over 4s`, def.spawns.every((s, i) => i === 0 || s.t - def.spawns[i - 1].t <= 4.0));
 }
 // Sector 1 teaches: slow, single-colour opening, first swap telegraphed.
 {
@@ -64,13 +68,21 @@ for (const def of SECTORS) {
   check('sector 1 telegraph names the swap key', firstMagenta.telegraph.includes('SPACE'));
   check('sector 1 has the slowest bullets', s1.bulletSpeed < SECTORS[1].bulletSpeed);
 }
-// Sector 2 is magenta-heavy (the no-swap gate's pressure), sector 3 densest.
+// Sector 2 is magenta-heavy (the no-swap gate's pressure), sector 12
+// densest (the finale), sector 3 still denser than sectors 1-2.
 {
-  const s2 = SECTORS[1], s3 = SECTORS[2];
+  const s2 = SECTORS[1], s3 = SECTORS[2], s12 = SECTORS[11];
   const mag2 = s2.spawns.filter((s) => s.pol === 'magenta').length;
   check('sector 2 is magenta-heavy', mag2 > s2.spawns.length / 2, `${mag2}/${s2.spawns.length} magenta`);
-  check('sector 3 has the most spawns', s3.spawns.length > s2.spawns.length && s3.spawns.length > SECTORS[0].spawns.length);
+  check('sector 3 is denser than sectors 1-2', s3.spawns.length > s2.spawns.length && s3.spawns.length > SECTORS[0].spawns.length);
   check('sector 3 has 3+ spinners (ring pressure)', s3.spawns.filter((s) => s.type === 'spinner').length >= 3);
+  check('sector 12 has the most spawns', s12.spawns.length >= Math.max(...SECTORS.map((s) => s.spawns.length)), `${s12.spawns.length} spawns`);
+  check('sector 12 has the fastest bullets', s12.bulletSpeed === Math.max(...SECTORS.map((s) => s.bulletSpeed)));
+  // M2: sector 2's opening is softened by spacing, not count cuts — the
+  // two opening weavers are staggered and the drifters arrive one at a time.
+  check('sector 2 opening weavers are staggered (no mixed fire at t=0)', s2.spawns[0].t < s2.spawns[1].t);
+  check('sector 2 opening drifters are staggered', s2.spawns[2].t < s2.spawns[3].t);
+  check('sector 2 keeps its full 22 spawns (no count cuts)', s2.spawns.length === 22);
 }
 
 // --- enemy type table ---
@@ -254,6 +266,27 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   stepRun(run2, { nova: true });
   check('nova one-shots a spinner', run2.enemies.length === 0);
   check('nova clears a 20-bullet field', run2.bullets.length === 0);
+  // M2 post-nova lull fix: after a nova, the next wave arrives within
+  // ~1.5s instead of leaving a ~5s near-empty arena. Sector 1's next
+  // wave after t=1.0 sits at t=4.5 — a nova at ~t=1.1 must pull it to
+  // ~t=2.6, keeping the remaining spawns' relative spacing.
+  const run3 = createRun(1);
+  while (run3.time < 1.05) stepRun(run3, {});
+  run3.player.charge = CHARGE_MAX;
+  const nextBefore = run3.spawnQueue[0].t;
+  const secondBefore = run3.spawnQueue[1].t;
+  stepRun(run3, { nova: true });
+  check('nova pulls the next wave forward (no post-nova lull)', run3.spawnQueue[0].t <= run3.time + 1.6 && run3.spawnQueue[0].t < nextBefore,
+    `next=${run3.spawnQueue[0].t.toFixed(2)} at t=${run3.time.toFixed(2)} (was ${nextBefore})`);
+  check('nova keeps later waves in relative order', approx(run3.spawnQueue[1].t - run3.spawnQueue[0].t, secondBefore - nextBefore, 1e-9),
+    `gap=${(run3.spawnQueue[1].t - run3.spawnQueue[0].t).toFixed(2)} (was ${(secondBefore - nextBefore).toFixed(2)})`);
+  // And a nova fired when the next wave is already close does not shift it.
+  const run4 = createRun(1);
+  while (run4.time < 4.3) stepRun(run4, {});
+  run4.player.charge = CHARGE_MAX;
+  const next4 = run4.spawnQueue[0].t;
+  stepRun(run4, { nova: true });
+  check('nova leaves an imminent wave alone', run4.spawnQueue[0].t === next4, `next=${run4.spawnQueue[0].t} (was ${next4})`);
 }
 
 // --- enemy fire patterns ---
