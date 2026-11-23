@@ -1,4 +1,4 @@
-// Neon Surge v0.2.2 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.2.3 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -26,7 +26,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.2.2', VERSION === '0.2.2');
+check('physics version is 0.2.3', VERSION === '0.2.3');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -290,8 +290,15 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   stepRun(run3, { nova: true });
   check('nova pulls the next wave forward (no post-nova lull)', run3.spawnQueue[0].t <= run3.time + 1.2 && run3.spawnQueue[0].t < nextBefore,
     `next=${run3.spawnQueue[0].t.toFixed(2)} at t=${run3.time.toFixed(2)} (was ${nextBefore})`);
-  check('nova keeps later waves in relative order', approx(run3.spawnQueue[1].t - run3.spawnQueue[0].t, secondBefore - nextBefore, 1e-9),
-    `gap=${(run3.spawnQueue[1].t - run3.spawnQueue[0].t).toFixed(2)} (was ${(secondBefore - nextBefore).toFixed(2)})`);
+  // v0.2.3: the SECOND wave is compressed to +2.5s too, so 4+ enemies are
+  // fighting by ~+3.5s — pulling only the first wave left the arena
+  // thin (2 enemies, 1–2 bullets between volleys at +4s). Waves after
+  // the second keep their relative spacing.
+  check('nova compresses the second wave to +2.5s', run3.spawnQueue[1].t <= run3.time + 2.7 && run3.spawnQueue[1].t < secondBefore,
+    `second=${run3.spawnQueue[1].t.toFixed(2)} at t=${run3.time.toFixed(2)} (was ${secondBefore})`);
+  const thirdBefore = 11.0; // S1's third wave sits at t=11.0, gap 3.0 after the second
+  check('nova keeps later waves in relative order', approx(run3.spawnQueue[2].t - run3.spawnQueue[1].t, thirdBefore - secondBefore, 1e-9),
+    `gap=${(run3.spawnQueue[2].t - run3.spawnQueue[1].t).toFixed(2)} (was ${(thirdBefore - secondBefore).toFixed(2)})`);
   // And a nova fired when the next wave is already close does not shift it.
   const run4 = createRun(1);
   while (run4.time < 4.3) stepRun(run4, {});
