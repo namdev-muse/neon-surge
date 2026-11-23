@@ -1,4 +1,4 @@
-// Neon Surge v0.2.3 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.3.0 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -10,7 +10,7 @@ import {
   ABSORB_CHARGE, ABSORB_SCORE, ABSORB_RADIUS, BULLET_R,
   HIT_DAMAGE, HIT_INVULN, CONTACT_DAMAGE, KILL_SCORE,
   ENEMY_TYPES, SPINNER_RING_COUNT, WEAVER_SPREAD_COUNT, SNIPER_TELEGRAPH, SURGE_WINDOW,
-  FEEDBACK, FEEDBACK_TIERS, FEEDBACK_LAYERS,
+  FEEDBACK, FEEDBACK_TIERS, FEEDBACK_LAYERS, STREAK_MILESTONES,
   SECTORS, sectorById, createRun, stepRun, drainEvents, cloneRun,
   simulateRun, createDecisionBot, createNoSwapBot, createSitStillBot, createRandomBot,
   defaultSave, serializeSave, parseSave, recordBest, isSectorUnlocked, bestFor,
@@ -26,7 +26,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.2.3', VERSION === '0.2.3');
+check('physics version is 0.3.0', VERSION === '0.3.0');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -290,7 +290,7 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   stepRun(run3, { nova: true });
   check('nova pulls the next wave forward (no post-nova lull)', run3.spawnQueue[0].t <= run3.time + 1.2 && run3.spawnQueue[0].t < nextBefore,
     `next=${run3.spawnQueue[0].t.toFixed(2)} at t=${run3.time.toFixed(2)} (was ${nextBefore})`);
-  // v0.2.3: the SECOND wave is compressed to +2.5s too, so 4+ enemies are
+  // v0.3.0: the SECOND wave is compressed to +2.5s too, so 4+ enemies are
   // fighting by ~+3.5s — pulling only the first wave left the arena
   // thin (2 enemies, 1–2 bullets between volleys at +4s). Waves after
   // the second keep their relative spacing.
@@ -374,6 +374,7 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   for (let i = 0; i < 60; i++) stepRun(nrun, {});
   check('sniper fires one fast bullet after the telegraph', nrun.bullets.length === 1);
   check('sniper bullet is faster than a drifter bullet', Math.hypot(nrun.bullets[0].vx, nrun.bullets[0].vy) > SECTORS[0].bulletSpeed * 1.2);
+  check('sniper shot emits a sniper-shot event (the crack has a sound to attach to)', drainEvents(nrun).some((e) => e.type === 'sniper-shot'));
   // REGRESSION (2026-11-24): a sniper spawned through the real spawn queue
   // must actually reach its hover point and telegraph — the manual test
   // above builds the sniper with entering:false, so it never caught the
@@ -461,6 +462,43 @@ check('every feedback entry has trauma + hit-stop + layers', Object.values(FEEDB
 check('nova is the biggest feedback tier', FEEDBACK.nova.trauma >= FEEDBACK.hit.trauma && FEEDBACK.nova.hitStop >= FEEDBACK.hit.hitStop);
 check('feedback tiers are ordered small < medium < large', FEEDBACK_TIERS.small.trauma[1] <= FEEDBACK_TIERS.medium.trauma[0] && FEEDBACK_TIERS.medium.trauma[1] <= FEEDBACK_TIERS.large.trauma[0]);
 check('all feedback layers are named', FEEDBACK_LAYERS.every((l) => typeof l === 'string' && l.length > 0));
+// M3: the table is the contract — every event the sim can emit must have
+// an entry, every layer it names must exist, and every trauma/hit-stop
+// must sit inside its tier, or the renderer cannot fire the full bundle.
+{
+  const EMITTABLE = ['absorb', 'swap', 'hit', 'kill', 'nova', 'clear', 'lost', 'nova-ready', 'sniper-shot', 'sniper-aim', 'ring', 'spawn', 'telegraph'];
+  check('every event the sim can emit has a FEEDBACK entry', EMITTABLE.every((t) => FEEDBACK[t]), EMITTABLE.filter((t) => !FEEDBACK[t]).join(','));
+  check('every FEEDBACK layer is a named layer', Object.values(FEEDBACK).every((f) => f.layers.every((l) => FEEDBACK_LAYERS.includes(l))));
+  check('small events sit in the small tier (trauma <= 0.20, no hit-stop)', ['absorb', 'swap', 'nova-ready'].every((t) => FEEDBACK[t].trauma <= 0.20 && FEEDBACK[t].hitStop === 0));
+  check('medium events sit in the medium tier', ['hit', 'kill', 'clear'].every((t) => FEEDBACK[t].trauma >= 0.25 && FEEDBACK[t].trauma <= 0.50 && FEEDBACK[t].hitStop >= 0.03 && FEEDBACK[t].hitStop <= 0.08));
+  check('large events sit in the large tier', ['nova', 'lost'].every((t) => FEEDBACK[t].trauma >= 0.70 && FEEDBACK[t].hitStop >= 0.10 && FEEDBACK[t].hitStop <= 0.15));
+  check('clear and lost carry the layers the renderer must fire', FEEDBACK.clear.layers.includes('flash') && FEEDBACK.clear.layers.includes('pop') && FEEDBACK.lost.layers.includes('slow-mo') && FEEDBACK.lost.layers.includes('flash'));
+  check('streak milestones are strictly increasing from 5', STREAK_MILESTONES[0] === 5 && STREAK_MILESTONES.every((m, i) => i === 0 || m > STREAK_MILESTONES[i - 1]));
+}
+// M3: nova-ready is a crossing, not a state — it fires once when the
+// charge reaches full, not on every absorb at full, and again after a
+// nova spends the charge.
+{
+  const run = createRun(1);
+  run.spawnQueue = [{ t: 999, type: 'drifter', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 150 }];
+  run.player.charge = NOVA_COST - ABSORB_CHARGE; // one absorb from full
+  run.bullets.push({ x: run.player.x, y: run.player.y, vx: 0, vy: 0, pol: 'cyan', r: BULLET_R, age: 0 });
+  stepRun(run, {});
+  check('crossing the nova threshold emits a nova-ready event', drainEvents(run).some((e) => e.type === 'nova-ready' && e.charge >= NOVA_COST));
+  run.bullets.push({ x: run.player.x, y: run.player.y, vx: 0, vy: 0, pol: 'cyan', r: BULLET_R, age: 0 });
+  stepRun(run, {});
+  check('nova-ready fires once per crossing, not on every absorb at full', !drainEvents(run).some((e) => e.type === 'nova-ready'));
+  stepRun(run, { nova: true });
+  check('nova spends the charge after the ready event', run.player.charge < NOVA_COST, `charge=${run.player.charge}`);
+  run.player.charge = NOVA_COST - ABSORB_CHARGE;
+  run.bullets.push({ x: run.player.x, y: run.player.y, vx: 0, vy: 0, pol: 'cyan', r: BULLET_R, age: 0 });
+  stepRun(run, {});
+  check('nova-ready fires again after a nova spends the charge', drainEvents(run).some((e) => e.type === 'nova-ready'));
+}
+// M3: music setting defaults on and migrates old saves.
+check('music defaults on', defaultSave().settings.music === true);
+check('an old save without a music setting gets music on', parseSave(JSON.stringify({ version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 0.5, flash: false, muted: true } })).settings.music === true);
+check('music setting survives a round trip', parseSave(serializeSave({ ...defaultSave(), settings: { ...defaultSave().settings, music: false } })).settings.music === false);
 check('DT is 1/60', approx(DT, 1 / 60));
 
 console.log(`smoke: ${passed} passed, ${failed} failed`);

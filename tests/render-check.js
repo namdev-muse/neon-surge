@@ -1,4 +1,4 @@
-// Neon Surge v0.2.3 — headless browser render check.
+// Neon Surge v0.3.0 — headless browser render check.
 // Serves the game dir over local HTTP, loads it in a headless browser, and
 // asserts the M1 core, by hook and by eye:
 //   - the menu renders over a LIVE demo (the attract-mode bot actually
@@ -10,6 +10,10 @@
 //     lesson), and the polarity swap flips the HUD chip + wisp colour
 //   - the autopilot (decision bot) absorbs, novas and clears sector 1,
 //     the complete screen shows, and the best score is saved
+//   - M3 feel bundles fire: absorb leaves live particles, a nova leaves
+//     slow-mo / flash / zoom / a shockwave, a hit leaves flash + trauma;
+//     the music loop runs after Play; the shake/flash/music toggles work
+//     and the shake slider gates the actual shake amplitude
 //   - pause focuses Resume; Enter resumes
 //   - ?sector=3 jumps straight into sector 3 (the playtest path)
 //   - feel state returns to rest (trauma 0, timeScale 1) when idle
@@ -116,7 +120,7 @@ try {
     const b = document.getElementById('btn-play');
     return b && !b.classList.contains('hidden') && b.textContent.includes('Play');
   }));
-  check('no version text on the player-facing menu', !/v0\.2\.0|0\.2\.0/.test(menuText), menuText.slice(0, 200));
+  check('no version text on the player-facing menu', !/v0\.3\.0|0\.3\.0/.test(menuText), menuText.slice(0, 200));
   check('no engine text on the player-facing menu', !/three\.js|canvas 2d|webgl/i.test(menuText));
   check('menu lists 12 sectors', await page.evaluate(() => window.__surge.sectors().length === 12));
   // The demo behind the menu is actually playing: its clock advances and
@@ -156,6 +160,9 @@ try {
   await page.waitForFunction(() => window.__surge.state.phase === 'playing', null, { timeout: 5000 });
   check('Play starts sector 1', await page.evaluate(() => window.__surge.state.sectorId === 1));
   check('HUD is visible while playing', await page.evaluate(() => !document.getElementById('hud').classList.contains('hidden')));
+  // M3: the generative music loop starts with play (a real gesture).
+  const audio = await page.evaluate(() => window.__surge.audio());
+  check('music loop runs after Play (audio live, scheduler on)', audio.hasAudio && audio.musicOn && audio.musicPlaying, JSON.stringify(audio));
   await page.waitForTimeout(800);
   // Screen-space movement, polled (not fixed waits — the headless loop
   // runs slower than real time under SwiftShader, so poll until it moves).
@@ -178,6 +185,18 @@ try {
   // Autopilot on BEFORE the long screenshot: an idle player dies during
   // a 60-180s SwiftShader capture, and a dead run makes the shot useless.
   await page.evaluate(() => window.__surge.autopilot(true));
+  // M3: the absorb bundle fires — live particles in the same frame the
+  // absorb counter moves. Poll for the absorb, then read feel at once:
+  // particles live 0.45s, so a slow read would miss them.
+  await page.waitForFunction(() => window.__surge.info().absorbs > 0, null, { timeout: 30000 });
+  const absorbFeel = await page.evaluate(() => window.__surge.feel());
+  check('absorb fires its bundle (live particles right after an absorb)', absorbFeel.particlesAlive > 0, JSON.stringify(absorbFeel));
+  // M3: the nova bundle fires — slow-mo, flash, zoom punch or shockwave
+  // must still be live in the frame the nova counter moves (all last
+  // 0.37–0.55s, so the read has to follow the poll immediately).
+  await page.waitForFunction(() => window.__surge.info().novas > 0, null, { timeout: 90000 });
+  const novaFeel = await page.evaluate(() => window.__surge.feel());
+  check('nova fires its full bundle (slow-mo / flash / zoom / shockwave)', novaFeel.slowMoT > 0 || novaFeel.flashT > 0 || novaFeel.zoomT > 0 || novaFeel.shockwaves > 0, JSON.stringify(novaFeel));
   await page.waitForTimeout(3000);
   await page.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, 'gameplay-1280x720.png') });
   console.log('render-check: gameplay shot captured');
@@ -208,7 +227,7 @@ try {
   // Feel state returns to rest once the game sits idle.
   await page.waitForTimeout(2500);
   const feel = await page.evaluate(() => window.__surge.feel());
-  check('feel state returns to rest (trauma 0, timeScale 1, no shockwaves)', feel.trauma === 0 && feel.timeScale === 1 && feel.shockwaves === 0,
+  check('feel state returns to rest (trauma 0, timeScale 1, flash 0, zoom 0, no shockwaves/pops/particles)', feel.trauma === 0 && feel.timeScale === 1 && feel.flashT === 0 && feel.swapFlashT === 0 && feel.zoomT === 0 && feel.shockwaves === 0 && feel.pops === 0 && feel.particlesAlive === 0,
     JSON.stringify(feel));
   await context.close();
 
@@ -234,6 +253,36 @@ try {
   await page2.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, 'sector3-1280x720.png') });
   console.log('render-check: sector 3 shot captured');
   await context2.close();
+
+  // --- M3: hit bundle + accessibility toggles (fresh run, no autopilot) --
+  // An idle wisp in sector 1 takes a hit within seconds; the hit bundle
+  // (flash 0.22s, trauma 0.45) must still be live in the frame the hull
+  // first drops, so the read follows the poll immediately.
+  const context3 = await browser.newContext({ viewport: { width: 1280, height: 720 }, timezoneId: 'Asia/Bangkok' });
+  const page3 = await context3.newPage();
+  page3.on('console', (msg) => { if (msg.type() === 'error') errors.push(`hit console: ${msg.text()}`); });
+  page3.on('pageerror', (err) => errors.push(`hit pageerror: ${String(err)}`));
+  await page3.goto(`http://127.0.0.1:${port}/?sector=1`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page3.waitForFunction(() => window.__surge, null, { timeout: 30000 });
+  await page3.waitForFunction(() => window.__surge.state.phase === 'playing', null, { timeout: 5000 });
+  await page3.waitForFunction(() => window.__surge.info().playerWorld.hull < 100, null, { timeout: 30000 });
+  const hitFeel = await page3.evaluate(() => window.__surge.feel());
+  check('hit fires its bundle (flash and/or trauma live right after the hit)', hitFeel.flashT > 0 || hitFeel.trauma > 0.05, JSON.stringify(hitFeel));
+  // The shake slider gates the actual shake: with trauma still live,
+  // shake 0 must read an amplitude of exactly 0.
+  await page3.evaluate(() => window.__surge.setShake(0));
+  const noShake = await page3.evaluate(() => window.__surge.feel());
+  check('shake slider at 0 gates the shake (amplitude 0 while trauma is live)', noShake.shakeSetting === 0 && noShake.shakeAmp === 0 && noShake.trauma > 0, JSON.stringify(noShake));
+  await page3.evaluate(() => window.__surge.setShake(1));
+  check('shake slider restores to 100%', await page3.evaluate(() => window.__surge.feel().shakeSetting === 1));
+  await page3.evaluate(() => window.__surge.setFlash(false));
+  check('flash toggle turns flashing off (persisted)', await page3.evaluate(() => window.__surge.feel().flashEnabled === false && window.__surge.save.settings.flash === false));
+  await page3.evaluate(() => window.__surge.setFlash(true));
+  await page3.evaluate(() => window.__surge.setMusic(false));
+  check('music toggle stops the loop', await page3.evaluate(() => window.__surge.audio().musicPlaying === false));
+  await page3.evaluate(() => window.__surge.setMusic(true));
+  check('music toggle restarts the loop', await page3.evaluate(() => window.__surge.audio().musicPlaying === true));
+  await context3.close();
 
   if (errors.length > 0) {
     console.error('render-check: console/page errors:');
