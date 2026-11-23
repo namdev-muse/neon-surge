@@ -1,4 +1,4 @@
-// Neon Surge v0.2.2 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.2.3 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -12,7 +12,7 @@
 //   - sit-still bot loses all 12
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.2.2';
+export const VERSION = '0.2.3';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -692,14 +692,25 @@ function doNova(run) {
   pushEvent(run, { type: 'nova', cleared, kills, charge: p.charge });
   // Post-nova lull fix (M2): a nova is the game's best moment — it must
   // not go quiet for ~5s while the next wave spawns. Pull the next wave
-  // forward so it arrives within ~1.0s, keeping the remaining spawns'
-  // relative spacing (no count cuts — Bastion lesson). The surge window
-  // (6.0s) covers the next two waves, so 4–6 enemies are fighting again
-  // within ~4s of the nova instead of just the next pair.
+  // forward so it arrives within ~1.0s, and compress the SECOND wave to
+  // +2.5s, keeping the remaining spawns' relative spacing (no count cuts
+  // — Bastion lesson). The surge window (6.0s) covers both waves, so 4+
+  // enemies are fighting again by ~+3.5s. (v0.2.2 only pulled the first
+  // wave: the probe showed 2 enemies by +1s but only 4 by +4s with 1–2
+  // bullets between volleys, and the live playtest still called the
+  // arena quiet — the second wave is what makes it feel busy.)
   const next = run.spawnQueue[0];
-  if (next && next.t > run.time + 1.0) {
-    const shift = next.t - (run.time + 1.0);
-    for (const s of run.spawnQueue) s.t -= shift;
+  if (next) {
+    if (next.t > run.time + 1.0) {
+      const shift = next.t - (run.time + 1.0);
+      for (const s of run.spawnQueue) s.t -= shift;
+    }
+    const t1 = run.spawnQueue[0].t;
+    const second = run.spawnQueue.find((s) => s.t > t1 + 0.001);
+    if (second && second.t > run.time + 2.5) {
+      const shift2 = second.t - (run.time + 2.5);
+      for (const s of run.spawnQueue) if (s.t > t1 + 0.001) s.t -= shift2;
+    }
   }
   // Open the surge window: the next waves arrive already fighting (see
   // spawnEnemy). Without it the pull-forward above only fixes WHEN the
