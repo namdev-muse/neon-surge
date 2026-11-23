@@ -1,4 +1,4 @@
-// Neon Surge v0.2.1 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.2.2 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -12,7 +12,7 @@
 //   - sit-still bot loses all 12
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.2.1';
+export const VERSION = '0.2.2';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -45,10 +45,16 @@ export const COMBO_WINDOW = 1.2;      // s — absorbs inside the window chain
 
 // --- enemies ---
 // hp / radius / score / base speed / fire interval / bullet-speed factor
+// NOTE: speed must be > 0 for EVERY type — it drives the entry glide
+// (updateEnemy: step = speed * 2.2 * DT), and an enemy with speed 0 never
+// reaches its hover point, stays entering=true forever, and never fires.
+// That was the sniper bug (2026-11-24: sniper speed was 0, so no sniper
+// in any sector ever telegraphed or fired — the M1/M2 playtests were
+// judging a game with a dead enemy type).
 export const ENEMY_TYPES = {
   drifter: { hp: 40, r: 16, score: 100, speed: 46, fireInterval: 1.9, bulletFactor: 1.0, fireKind: 'aimed' },
   weaver: { hp: 60, r: 17, score: 150, speed: 72, fireInterval: 2.0, bulletFactor: 1.0, fireKind: 'spread3' },
-  sniper: { hp: 50, r: 15, score: 150, speed: 0, fireInterval: 2.6, bulletFactor: 1.75, fireKind: 'aimed' },
+  sniper: { hp: 50, r: 15, score: 150, speed: 120, fireInterval: 2.6, bulletFactor: 1.75, fireKind: 'aimed' },
   spinner: { hp: 100, r: 22, score: 300, speed: 26, fireInterval: 2.7, bulletFactor: 0.9, fireKind: 'ring' },
 };
 export const SPINNER_RING_COUNT = 14; // ring bullets, alternating polarity
@@ -56,7 +62,7 @@ export const WEAVER_SPREAD_COUNT = 5;
 export const WEAVER_SPREAD_ANGLE = 0.2; // rad between spread bullets
 export const AIM_LEAD = 0.25;         // s — aimed bullets lead the player
 export const SNIPER_TELEGRAPH = 0.85; // s of warning before a sniper fires (M2: 0.65 was too brief to read in a bullet storm)
-export const SURGE_WINDOW = 4.0;      // s after a nova during which new spawns arrive already fighting (M2 post-nova lull fix)
+export const SURGE_WINDOW = 6.0;      // s after a nova during which new spawns arrive already fighting (M2 post-nova lull fix; 4.0s covered only the next wave — the arena still felt empty)
 
 // --- game feel tiers (same recipe as the 3D skill; engine-agnostic) ---
 export const FEEDBACK = {
@@ -342,18 +348,18 @@ export const SECTORS = [
       { t: 10.5, type: 'weaver', x: -24, y: 420, pol: 'magenta', hx: 210, hy: 420 },
       { t: 10.5, type: 'weaver', x: 984, y: 200, pol: 'magenta', hx: 750, hy: 200 },
       { t: 13.0, type: 'spinner', x: 480, y: -30, pol: 'magenta', hx: 480, hy: 190 },
-      { t: 13.0, type: 'drifter', x: 660, y: -24, pol: 'cyan', hx: 660, hy: 210 },
+      { t: 13.0, type: 'drifter', x: 660, y: -24, pol: 'magenta', hx: 660, hy: 210 },
       { t: 15.5, type: 'drifter', x: 200, y: -24, pol: 'magenta', hx: 200, hy: 230 },
       { t: 15.5, type: 'drifter', x: 760, y: -24, pol: 'magenta', hx: 760, hy: 230 },
       { t: 18.0, type: 'weaver', x: -24, y: 260, pol: 'cyan', hx: 210, hy: 260 },
       { t: 18.0, type: 'weaver', x: 984, y: 340, pol: 'magenta', hx: 750, hy: 340 },
-      { t: 20.5, type: 'sniper', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 70 },
+      { t: 20.5, type: 'sniper', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 70 },
       { t: 20.5, type: 'sniper', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 90 },
       { t: 23.0, type: 'spinner', x: 300, y: -30, pol: 'cyan', hx: 300, hy: 220 },
       { t: 23.0, type: 'spinner', x: 660, y: -30, pol: 'magenta', hx: 660, hy: 220 },
       { t: 25.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 180 },
       { t: 25.5, type: 'weaver', x: -24, y: 360, pol: 'magenta', hx: 210, hy: 360 },
-      { t: 28.0, type: 'weaver', x: 984, y: 440, pol: 'cyan', hx: 750, hy: 440 },
+      { t: 28.0, type: 'weaver', x: 984, y: 440, pol: 'magenta', hx: 750, hy: 440 },
       { t: 28.0, type: 'drifter', x: 720, y: -24, pol: 'magenta', hx: 720, hy: 200 },
       { t: 30.5, type: 'spinner', x: 480, y: -30, pol: 'magenta', hx: 480, hy: 250 },
       { t: 30.5, type: 'sniper', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 60 },
@@ -686,11 +692,13 @@ function doNova(run) {
   pushEvent(run, { type: 'nova', cleared, kills, charge: p.charge });
   // Post-nova lull fix (M2): a nova is the game's best moment — it must
   // not go quiet for ~5s while the next wave spawns. Pull the next wave
-  // forward so it arrives within ~1.5s, keeping the remaining spawns'
-  // relative spacing (no count cuts — Bastion lesson).
+  // forward so it arrives within ~1.0s, keeping the remaining spawns'
+  // relative spacing (no count cuts — Bastion lesson). The surge window
+  // (6.0s) covers the next two waves, so 4–6 enemies are fighting again
+  // within ~4s of the nova instead of just the next pair.
   const next = run.spawnQueue[0];
-  if (next && next.t > run.time + 1.5) {
-    const shift = next.t - (run.time + 1.5);
+  if (next && next.t > run.time + 1.0) {
+    const shift = next.t - (run.time + 1.0);
     for (const s of run.spawnQueue) s.t -= shift;
   }
   // Open the surge window: the next waves arrive already fighting (see

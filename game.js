@@ -1,4 +1,4 @@
-// Neon Surge v0.2.1 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.2.2 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
