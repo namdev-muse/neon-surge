@@ -1,4 +1,4 @@
-// Neon Surge v0.2.0 — size sweep screenshots.
+// Neon Surge v0.2.1 — size sweep screenshots.
 // Serves the game dir over local HTTP and captures the menu + gameplay at
 // 1280x720, 2560x1080 and 1080x2340 (portrait). Inspect every shot by eye:
 // no clipped or overlapping elements, no cut-off text, HUD fits. The

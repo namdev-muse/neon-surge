@@ -1,4 +1,4 @@
-// Neon Surge v0.2.0 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.2.1 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -9,7 +9,7 @@ import {
   SWAP_COOLDOWN, HULL_MAX, CHARGE_MAX, NOVA_COST, NOVA_DAMAGE,
   ABSORB_CHARGE, ABSORB_SCORE, ABSORB_RADIUS, BULLET_R,
   HIT_DAMAGE, HIT_INVULN, CONTACT_DAMAGE, KILL_SCORE,
-  ENEMY_TYPES, SPINNER_RING_COUNT, WEAVER_SPREAD_COUNT,
+  ENEMY_TYPES, SPINNER_RING_COUNT, WEAVER_SPREAD_COUNT, SNIPER_TELEGRAPH, SURGE_WINDOW,
   FEEDBACK, FEEDBACK_TIERS, FEEDBACK_LAYERS,
   SECTORS, sectorById, createRun, stepRun, drainEvents, cloneRun,
   simulateRun, createDecisionBot, createNoSwapBot, createSitStillBot, createRandomBot,
@@ -26,7 +26,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.2.0', VERSION === '0.2.0');
+check('physics version is 0.2.1', VERSION === '0.2.1');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -83,6 +83,18 @@ for (const def of SECTORS) {
   check('sector 2 opening weavers are staggered (no mixed fire at t=0)', s2.spawns[0].t < s2.spawns[1].t);
   check('sector 2 opening drifters are staggered', s2.spawns[2].t < s2.spawns[3].t);
   check('sector 2 keeps its full 22 spawns (no count cuts)', s2.spawns.length === 22);
+  // M2 playtest fixes: sector 5 keeps its magenta pressure (17) but
+  // feeds the absorb economy early — 5 cyan spawns in the first 11s so
+  // charge can build before the sniper flood; sector 12's opening is
+  // staggered like sector 2's.
+  const s5 = SECTORS[4];
+  check('sector 5 keeps 17 magenta spawns (no-swap pressure intact)', s5.spawns.filter((s) => s.pol === 'magenta').length === 17,
+    `${s5.spawns.filter((s) => s.pol === 'magenta').length} magenta`);
+  check('sector 5 has cyan food in the opening (5 cyan spawns by t=11)', s5.spawns.filter((s) => s.t <= 11 && s.pol === 'cyan').length >= 5,
+    `${s5.spawns.filter((s) => s.t <= 11 && s.pol === 'cyan').length} cyan by t=11`);
+  check('sniper telegraph is 0.85s (readable in a bullet storm)', SNIPER_TELEGRAPH === 0.85);
+  check('sector 12 opening is staggered (spinner alone at t=1.0)', s12.spawns[0].t < s12.spawns[1].t);
+  check('sector 12 second spinner is staggered (t=6.0, not 4.5)', s12.spawns.filter((s) => s.type === 'spinner').map((s) => s.t).includes(6.0));
 }
 
 // --- enemy type table ---
@@ -287,6 +299,31 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   const next4 = run4.spawnQueue[0].t;
   stepRun(run4, { nova: true });
   check('nova leaves an imminent wave alone', run4.spawnQueue[0].t === next4, `next=${run4.spawnQueue[0].t} (was ${next4})`);
+  // M2 post-nova surge: enemies spawned inside the surge window arrive
+  // already at their hover point and firing, so the arena rebuilds in
+  // ~2s instead of going quiet for ~8s (live playtest 03:55, sector 9).
+  const run5 = createRun(1);
+  while (run5.time < 1.05) stepRun(run5, {});
+  run5.player.charge = CHARGE_MAX;
+  stepRun(run5, { nova: true });
+  check('nova opens a surge window', run5.surgeT > 0, `surgeT=${run5.surgeT}`);
+  const before5 = run5.enemies.length;
+  while (run5.enemies.length === before5) stepRun(run5, {});
+  const surgeEnemy = run5.enemies[run5.enemies.length - 1];
+  // entering=false proves it spawned at the hover point; drifters sway
+  // from the first tick, so assert nearness (sway amplitude 46), not
+  // exact equality.
+  check('surge spawn arrives already at its hover point (no entry glide)', !surgeEnemy.entering && Math.hypot(surgeEnemy.x - surgeEnemy.hx, surgeEnemy.y - surgeEnemy.hy) <= 50,
+    `entering=${surgeEnemy.entering} at (${surgeEnemy.x.toFixed(0)},${surgeEnemy.y.toFixed(0)}) hover (${surgeEnemy.hx},${surgeEnemy.hy})`);
+  check('surge spawn fires within ~1s', surgeEnemy.fireT <= 0.9, `fireT=${surgeEnemy.fireT.toFixed(2)}`);
+  // And a spawn with no surge window glides in normally (fresh runs have
+  // surgeT 0 — the surge is strictly a post-nova state).
+  const run6 = createRun(1);
+  run6.spawnQueue = [{ t: run6.time, type: 'drifter', x: 200, y: -24, pol: 'cyan', hx: 200, hy: 200 }];
+  stepRun(run6, {});
+  const lateEnemy = run6.enemies[run6.enemies.length - 1];
+  check('spawn with no surge window glides in normally', lateEnemy.entering === true && lateEnemy.y < lateEnemy.hy,
+    `entering=${lateEnemy.entering} y=${lateEnemy.y} hy=${lateEnemy.hy}`);
 }
 
 // --- enemy fire patterns ---
