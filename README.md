@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.2.3 — M2 sector craft, 12 sectors)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v0.3.0 — M3 feel & juice)
 
 ## How to play
 
@@ -41,6 +41,19 @@ score per sector is saved; clearing a sector unlocks the next.
 | 11 | Storm Surge | Everything at once, faster than ever — three-enemy waves, no safe lane. |
 | 12 | The Heart | The final gauntlet: every enemy, every pattern, at full speed. |
 
+## Feel (M3)
+
+Every event fires a full tier bundle from the feedback table in
+`physics.js` (`FEEDBACK`): trauma shake (shake = trauma²), hit-stop,
+flash, slow-mo and shockwaves, layered with particles, number pops and
+synth SFX — all inside the frame the event fires. Absorb streaks earn
+milestone pops and chimes (×5/10/15/20/30/40/50); reaching a full charge
+plays a nova-ready chime; a nova fires slow-mo, a zoom punch and a
+shockwave; snipers crack when they shoot. A generative synth loop
+(Am–F–C–G bass under an A-minor pentatonic arpeggio) plays under the
+game, with a Music toggle in Settings. Screen shake (0–100%) and
+flashing can be turned down or off in Settings.
+
 ## Enemies
 
 - **Drifter** — drifts in and fires single aimed bullets.
@@ -71,8 +84,9 @@ unlock. It is deliberately not shown in the UI.
 
 ```sh
 node --check game.js && node --check physics.js
-npm run smoke        # 264 assertions: sectors, movement (screen-space),
-                     # swap, absorb, damage, nova, enemy fire, saves
+npm run smoke        # 292 assertions: sectors, movement (screen-space),
+                     # swap, absorb, damage, nova, enemy fire, saves,
+                     # feedback tiers, nova-ready crossing, music setting
 npm run bot          # anti-slop gates on all 12 sectors
 npm run render-check # headless Chromium: menu, demo, screen-space movement,
                      # swap, autopilot clear, pause, ?sector=3, zero console errors

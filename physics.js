@@ -1,4 +1,4 @@
-// Neon Surge v0.2.3 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.3.0 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -12,7 +12,7 @@
 //   - sit-still bot loses all 12
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.2.3';
+export const VERSION = '0.3.0';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -65,14 +65,30 @@ export const SNIPER_TELEGRAPH = 0.85; // s of warning before a sniper fires (M2:
 export const SURGE_WINDOW = 6.0;      // s after a nova during which new spawns arrive already fighting (M2 post-nova lull fix; 4.0s covered only the next wave — the arena still felt empty)
 
 // --- game feel tiers (same recipe as the 3D skill; engine-agnostic) ---
+// FEEDBACK is the single source of truth for what each event should feel
+// like: trauma (shake = trauma^2), hit-stop, and the layers the renderer
+// must fire. game.js honours the whole table — an event whose layers are
+// listed here but never rendered is a bug, not a design choice (M3).
+// Small tier: 0.10–0.20 trauma, no hit-stop. Medium: 0.30–0.50, 0.04–0.06s
+// stop. Large: 0.70–1.00, 0.10–0.15s stop.
 export const FEEDBACK = {
-  absorb: { trauma: 0.08, hitStop: 0, layers: ['sound', 'particles', 'pop'] },
-  swap: { trauma: 0.05, hitStop: 0, layers: ['sound', 'flash-ring'] },
+  absorb: { trauma: 0.12, hitStop: 0, layers: ['sound', 'particles', 'pop'] },
+  swap: { trauma: 0.10, hitStop: 0, layers: ['sound', 'flash-ring'] },
   hit: { trauma: 0.45, hitStop: 0.05, layers: ['sound', 'particles', 'shake', 'flash', 'pop'] },
-  kill: { trauma: 0.25, hitStop: 0.03, layers: ['sound', 'particles', 'shake', 'pop'] },
+  kill: { trauma: 0.25, hitStop: 0.03, layers: ['sound', 'particles', 'shake', 'pop', 'flash-ring'] },
   nova: { trauma: 0.85, hitStop: 0.12, layers: ['sound', 'particles', 'shake', 'flash', 'slow-mo', 'shockwave', 'pop'] },
-  clear: { trauma: 0.4, hitStop: 0.08, layers: ['sound', 'particles', 'shake', 'flash', 'pop'] },
+  clear: { trauma: 0.40, hitStop: 0.08, layers: ['sound', 'particles', 'shake', 'flash', 'shockwave', 'pop'] },
+  lost: { trauma: 0.70, hitStop: 0.10, layers: ['sound', 'particles', 'shake', 'flash', 'slow-mo', 'pop'] },
+  'nova-ready': { trauma: 0.15, hitStop: 0, layers: ['sound', 'particles', 'pop'] },
+  'sniper-shot': { trauma: 0, hitStop: 0, layers: ['sound'] },
+  'sniper-aim': { trauma: 0, hitStop: 0, layers: ['sound'] },
+  ring: { trauma: 0, hitStop: 0, layers: ['sound'] },
+  spawn: { trauma: 0, hitStop: 0, layers: ['particles'] },
+  telegraph: { trauma: 0, hitStop: 0, layers: ['sound'] },
 };
+// Absorb streaks that earn a milestone pop + chime (game.js): the combo
+// itself is the score, the milestone is the celebration.
+export const STREAK_MILESTONES = [5, 10, 15, 20, 30, 40, 50];
 export const FEEDBACK_TIERS = {
   small: { trauma: [0.10, 0.20], hitStop: 0 },
   medium: { trauma: [0.30, 0.50], hitStop: [0.04, 0.06] },
@@ -785,12 +801,20 @@ export function stepRun(run, input = {}) {
     if (b.pol === p.pol) {
       if (d2 < ABSORB_RADIUS * ABSORB_RADIUS) {
         run.bullets.splice(i, 1);
+        const wasReady = p.charge >= NOVA_COST;
         p.charge = clamp(p.charge + ABSORB_CHARGE, 0, CHARGE_MAX);
         run.absorbs++;
         run.score += ABSORB_SCORE;
         run.combo++; run.comboT = COMBO_WINDOW;
         run.maxCombo = Math.max(run.maxCombo, run.combo);
         pushEvent(run, { type: 'absorb', pol: b.pol, x: b.x, y: b.y, charge: p.charge, combo: run.combo });
+        // Crossing the nova threshold is its own moment (M3): the charge
+        // bar filling is silent, the READY is not — the player must hear
+        // and see the instant their weapon comes online. Fires once per
+        // crossing; a nova spends the charge, so it can fire again.
+        if (!wasReady && p.charge >= NOVA_COST) {
+          pushEvent(run, { type: 'nova-ready', charge: p.charge, x: p.x, y: p.y });
+        }
       }
     } else if (p.invuln <= 0 && d2 < (PLAYER_R + b.r) * (PLAYER_R + b.r)) {
       run.bullets.splice(i, 1);
@@ -846,7 +870,7 @@ export function cloneRun(run) {
 
 // --- saves ---------------------------------------------------------------
 export function defaultSave() {
-  return { version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 1, flash: true, muted: false } };
+  return { version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 1, flash: true, muted: false, music: true } };
 }
 export function serializeSave(save) { return JSON.stringify(save); }
 export function parseSave(raw) {

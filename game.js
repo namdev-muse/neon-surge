@@ -1,15 +1,15 @@
-// Neon Surge v0.2.3 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.3.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
 // no auto-swap, no assist, no gun.
 import {
   VERSION, ARENA_W, ARENA_H, DT, PLAYER_R, PLAYER_SPEED,
-  HULL_MAX, CHARGE_MAX, NOVA_COST, NOVA_DAMAGE, HIT_DAMAGE,
+  HULL_MAX, CHARGE_MAX, NOVA_COST, NOVA_DAMAGE, HIT_DAMAGE, ABSORB_SCORE,
   SECTORS, sectorById, createRun, stepRun, drainEvents,
   createDecisionBot, defaultSave, serializeSave, parseSave,
   recordBest, isSectorUnlocked, bestFor, SAVE_KEY,
-  FEEDBACK, clamp, worldToScreen,
+  FEEDBACK, STREAK_MILESTONES, clamp, worldToScreen,
 } from './physics.js';
 
 const $ = (id) => document.getElementById(id);
@@ -89,7 +89,73 @@ const sfx = {
   denied() { tone(140, 0.12, 'square', 0.07); },
   ring() { tone(440, 0.12, 'sine', 0.05, 660); },
   aim() { tone(980, 0.05, 'sine', 0.04); },
+  // M3: the moments that were silent. A sniper shot is the fastest bullet
+  // in the game — it must crack. A nova coming online is the run's turning
+  // point — it must chime. A streak milestone is earned — it must sing.
+  shot() { noiseBurst(0.08, 0.14, 3200); tone(1500, 0.08, 'square', 0.05, 900); },
+  blip() { tone(1046, 0.06, 'sine', 0.05, 1318); },
+  novaReady() { [659, 880, 1318].forEach((f, i) => setTimeout(() => tone(f, 0.14, 'triangle', 0.11), i * 70)); },
+  streak(combo) {
+    const base = 660 + Math.min(combo, 30) * 12;
+    [0, 4, 7].forEach((s, i) => setTimeout(() => tone(base * [1, 1.25, 1.5][i], 0.1, 'triangle', 0.09), i * 55));
+  },
+  warn() { tone(196, 0.14, 'square', 0.08, 147); setTimeout(() => tone(196, 0.14, 'square', 0.08, 147), 180); },
 };
+
+// ---------------------------------------------------------------- music
+// Generative loop (M3): a quiet Am–F–C–G bass pulse under a sparse A-minor
+// pentatonic arpeggio, scheduled ahead on the AudioContext clock. No
+// samples, no assets, no autoplay — it starts on the first real gesture
+// (startSector) and stops when the music toggle is off. Mute silences it
+// through tone(), the same path as every SFX.
+const MUSIC_BPM = 96;
+const MUSIC_STEP = 60 / MUSIC_BPM / 2; // 8th notes
+const MUSIC_BASS = [110.0, 87.31, 130.81, 98.0]; // A2 F2 C3 G2, one per bar
+const MUSIC_ARP = [440.0, 523.25, 587.33, 659.25, 783.99, 880.0]; // A-minor pentatonic
+const MUSIC_PATTERN = [0, 2, 4, 3, 5, 4, 2, 1]; // one bar of 8ths
+let musicTimer = null, musicStep = 0, musicNextT = 0;
+function musicOn() { return save.settings.music !== false; }
+function scheduleMusic() {
+  if (!ac || !musicOn()) return;
+  while (musicNextT < ac.currentTime + 0.4) {
+    const step = musicStep;
+    const bar = Math.floor(step / 8) % MUSIC_BASS.length;
+    const at = musicNextT;
+    const delay = Math.max(0, (at - ac.currentTime) * 1000);
+    if (step % 8 === 0) setTimeout(() => tone(MUSIC_BASS[bar], 0.5, 'triangle', 0.055), delay);
+    if (step % 8 === 4) setTimeout(() => tone(MUSIC_BASS[bar] * 1.5, 0.35, 'triangle', 0.04), delay);
+    // Arp: play the pattern note on ~2 of every 3 steps so the loop
+    // breathes instead of ticking mechanically.
+    if (step % 3 !== 2) {
+      const f = MUSIC_ARP[MUSIC_PATTERN[step % 8]];
+      setTimeout(() => tone(f, 0.22, 'sine', 0.028), delay);
+    }
+    musicStep++;
+    musicNextT += MUSIC_STEP;
+  }
+}
+function startMusic() {
+  if (musicTimer !== null || !musicOn()) return;
+  ensureAudio();
+  if (!ac) return;
+  musicNextT = ac.currentTime + 0.15;
+  musicStep = 0;
+  musicTimer = setInterval(scheduleMusic, 120);
+}
+function stopMusic() {
+  if (musicTimer !== null) { clearInterval(musicTimer); musicTimer = null; }
+}
+function setMusic(on) {
+  save.settings.music = on;
+  persistSave();
+  updateMusicLabels();
+  if (on) startMusic(); else stopMusic();
+}
+function updateMusicLabels() {
+  const label = musicOn() ? 'Music: On' : 'Music: Off';
+  const el = $('btn-music-settings');
+  if (el) el.textContent = label;
+}
 
 // ---------------------------------------------------------------- state
 let save;
@@ -111,7 +177,8 @@ let drag = { active: false, id: null, x: 0, y: 0, startX: 0, startY: 0, startT: 
 
 // Feel state (must return to rest values when idle — see __surge.feel()).
 let trauma = 0, hitStopT = 0, slowMoT = 0, timeScale = 1, flashT = 0, flashColor = COLORS.gold;
-let swapFlashT = 0, fpsEma = 60, lastTime = performance.now(), acc = 0;
+let swapFlashT = 0, zoomT = 0, fpsEma = 60, lastTime = performance.now(), acc = 0;
+let hullLowWarned = false, lastDeniedT = 0;
 
 // Particles (pooled), shockwaves, floating pops.
 const particles = [];
@@ -232,11 +299,13 @@ function startDemo() {
 }
 function startSector(id) {
   ensureAudio();
+  startMusic();
   selectedSector = id;
   run = createRun(id);
   phase = 'playing';
   transitionT = null;
-  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0;
+  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; zoomT = 0;
+  hullLowWarned = false;
   for (const p of particles) p.alive = false;
   shockwaves.length = 0; pops.length = 0;
   screenStack = [];
@@ -352,7 +421,18 @@ function setFlash(on) {
 
 // ---------------------------------------------------------------- input
 function queueSwap() { if (phase === 'playing') { ensureAudio(); swapQueued = true; } }
-function queueNova() { if (phase === 'playing') { ensureAudio(); novaQueued = true; } }
+function queueNova() {
+  if (phase !== 'playing') return;
+  ensureAudio();
+  // M3: a nova press with no charge must answer, not swallow the input —
+  // the denied tick is what teaches the charge economy. Throttled so a
+  // held X doesn't buzz every frame.
+  if (run && run.player.charge < NOVA_COST && performance.now() - lastDeniedT > 300) {
+    lastDeniedT = performance.now();
+    sfx.denied();
+  }
+  novaQueued = true;
+}
 function currentInput() {
   if (autopilot && run) return autopilot.input(run);
   let mx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
@@ -425,63 +505,120 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('pointercancel', () => { drag.active = false; });
 
 // ---------------------------------------------------------------- events -> feel
+// M3: every event fires its FULL tier bundle from the FEEDBACK table in
+// physics.js — trauma, hit-stop, flash, slow-mo and shockwave are applied
+// generically here, so a layer listed in the table but never rendered is
+// impossible to miss. The per-event code below adds only the layers the
+// table can't express (particles, pops, sounds). Everything fires in the
+// same frame the event is drained, well inside the ~100ms bar.
+function fireTier(ev, opts = {}) {
+  const fb = FEEDBACK[ev.type];
+  if (!fb) return;
+  if (fb.trauma) trauma = Math.min(1, trauma + fb.trauma);
+  if (fb.hitStop) hitStopT = Math.max(hitStopT, fb.hitStop);
+  if (fb.layers.includes('slow-mo')) {
+    slowMoT = Math.max(slowMoT, opts.slowMo ?? 0.5);
+    timeScale = 0.35;
+  }
+  if (fb.layers.includes('flash')) {
+    flashT = Math.max(flashT, opts.flash ?? 0.3);
+    flashColor = opts.flashColor || COLORS.gold;
+  }
+  if (fb.layers.includes('shockwave')) {
+    addShockwave(opts.x ?? run.player.x, opts.y ?? run.player.y, opts.shockColor || COLORS.gold, opts.shockR ?? 300);
+  }
+  // Flash-ring: the swap's expanding wisp ring, or a small ring at the
+  // event for anything else (a kill pops a ring where the enemy died).
+  if (fb.layers.includes('flash-ring')) {
+    if (ev.type === 'swap') swapFlashT = 0.25;
+    else addShockwave(opts.x ?? ev.x ?? run.player.x, opts.y ?? ev.y ?? run.player.y, opts.shockColor || COLORS.gold, opts.shockR ?? 70);
+  }
+}
 function handleEvents(runObj) {
   for (const ev of drainEvents(runObj)) {
     switch (ev.type) {
-      case 'absorb':
+      case 'absorb': {
+        fireTier(ev);
         burst(ev.x, ev.y, POL_COLOR[ev.pol], 5, 120, 2.5, 0.45);
         sfx.absorb(ev.combo);
-        if (ev.combo >= 3) addPop(ev.x, ev.y - 14, `+${10} ×${ev.combo}`, POL_COLOR[ev.pol]);
+        // Streak milestones celebrate the combo itself: a gold pop, a
+        // small ring and a rising chime at 5/10/15/20/30/40/50.
+        if (STREAK_MILESTONES.includes(ev.combo)) {
+          addPop(ev.x, ev.y - 26, `STREAK ×${ev.combo}`, COLORS.gold);
+          addShockwave(ev.x, ev.y, POL_COLOR[ev.pol], 90);
+          sfx.streak(ev.combo);
+        } else if (ev.combo >= 2) {
+          addPop(ev.x, ev.y - 14, `+${ABSORB_SCORE} ×${ev.combo}`, POL_COLOR[ev.pol]);
+        }
+        break;
+      }
+      case 'nova-ready':
+        fireTier(ev);
+        burst(runObj.player.x, runObj.player.y, COLORS.gold, 12, 160, 3, 0.6);
+        addPop(runObj.player.x, runObj.player.y - 28, 'NOVA READY', COLORS.gold);
+        sfx.novaReady();
         break;
       case 'swap':
-        swapFlashT = 0.25;
+        fireTier(ev);
         sfx.swap();
         break;
       case 'hit':
-        trauma = Math.min(1, trauma + FEEDBACK.hit.trauma);
-        hitStopT = Math.max(hitStopT, FEEDBACK.hit.hitStop);
-        flashT = 0.22; flashColor = COLORS.red;
+        fireTier(ev, { flash: 0.22, flashColor: COLORS.red });
         burst(ev.x, ev.y, COLORS.red, 14, 220, 3.5, 0.7);
         addPop(ev.x, ev.y - 16, `-${HIT_DAMAGE}`, COLORS.red);
         sfx.hit();
+        // Hull-low is a crossing, not a state: warn once, when the hull
+        // first drops to 30 or below — the red edge pulse already shows
+        // the state, the warning marks the moment it became dangerous.
+        if (ev.hull <= 30 && ev.hull > 0 && !hullLowWarned) {
+          hullLowWarned = true;
+          addPop(ev.x, ev.y - 34, 'HULL LOW', COLORS.red);
+          sfx.warn();
+        }
         break;
       case 'kill':
+        fireTier(ev, { x: ev.x, y: ev.y, shockColor: POL_COLOR[ev.pol], shockR: 70 });
         burst(ev.x, ev.y, POL_COLOR[ev.pol], 16, 240, 3.5, 0.8);
         addPop(ev.x, ev.y - 18, `+${ev.score}`, COLORS.gold);
-        trauma = Math.min(1, trauma + FEEDBACK.kill.trauma);
-        hitStopT = Math.max(hitStopT, FEEDBACK.kill.hitStop);
         sfx.kill();
         break;
       case 'nova':
-        flashT = 0.5; flashColor = COLORS.gold;
-        trauma = Math.min(1, trauma + FEEDBACK.nova.trauma);
-        hitStopT = Math.max(hitStopT, FEEDBACK.nova.hitStop);
-        slowMoT = 0.5; timeScale = 0.35;
-        addShockwave(runObj.player.x, runObj.player.y, COLORS.gold, 420);
+        fireTier(ev, { flash: 0.5, flashColor: COLORS.gold, slowMo: 0.5, shockR: 420 });
+        zoomT = 0.45;
         burst(runObj.player.x, runObj.player.y, COLORS.gold, 40, 420, 4, 0.9);
         addPop(runObj.player.x, runObj.player.y - 30, 'NOVA!', COLORS.gold);
         sfx.nova();
         break;
       case 'clear':
+        fireTier(ev, { flash: 0.4, flashColor: COLORS.gold, shockR: 380 });
         sfx.clear();
         burst(runObj.player.x, runObj.player.y, COLORS.gold, 50, 380, 4, 1.1);
-        addShockwave(runObj.player.x, runObj.player.y, COLORS.gold, 380);
-        trauma = Math.min(1, trauma + FEEDBACK.clear.trauma);
+        addPop(runObj.player.x, runObj.player.y - 34, 'SECTOR CLEAR', COLORS.gold);
         break;
       case 'lost':
+        fireTier(ev, { flash: 0.6, flashColor: COLORS.red, slowMo: 0.8 });
         sfx.lost();
         burst(runObj.player.x, runObj.player.y, COLORS.red, 40, 320, 4, 1.0);
+        addPop(runObj.player.x, runObj.player.y - 30, 'WISP DOWN', COLORS.red);
         break;
       case 'telegraph':
+        fireTier(ev);
+        sfx.blip();
         toast(ev.text, 3000);
         break;
       case 'spawn':
         burst(ev.x, ev.y, POL_COLOR[ev.pol], 6, 90, 2.5, 0.5);
         break;
+      case 'sniper-shot':
+        fireTier(ev);
+        sfx.shot();
+        break;
       case 'sniper-aim':
+        fireTier(ev);
         sfx.aim();
         break;
       case 'ring':
+        fireTier(ev);
         sfx.ring();
         break;
       default:
@@ -686,6 +823,15 @@ function render(now) {
   const accent = active ? active.def.accent : COLORS.violet;
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Nova zoom punch (M3): a brief 5% push-in that eases back to exactly
+  // 1.0 — the camera punch to go with the slow-mo. Applied around the
+  // screen centre, before the shake translate.
+  if (zoomT > 0) {
+    const z = 1 + 0.05 * (zoomT / 0.45);
+    ctx.translate(viewW / 2, viewH / 2);
+    ctx.scale(z, z);
+    ctx.translate(-viewW / 2, -viewH / 2);
+  }
   // Trauma shake: shake = trauma^2, written to a visual offset only.
   const shakeAmp = trauma * trauma * 14 * (save.settings.shake ?? 1);
   if (shakeAmp > 0.1) ctx.translate((Math.random() * 2 - 1) * shakeAmp, (Math.random() * 2 - 1) * shakeAmp);
@@ -781,6 +927,7 @@ function frame(now) {
   simDt *= timeScale;
   trauma = Math.max(0, trauma - realDt * 1.6);
   flashT = Math.max(0, flashT - realDt * 2.2);
+  zoomT = Math.max(0, zoomT - realDt * 1.2);
 
   if (phase === 'playing' && run) {
     acc += simDt;
@@ -841,6 +988,7 @@ function bindUI() {
   $('btn-mute-hud').addEventListener('click', () => setMuted(!muted));
   $('btn-mute-settings').addEventListener('click', () => setMuted(!muted));
   $('btn-flash-settings').addEventListener('click', () => setFlash(save.settings.flash === false));
+  $('btn-music-settings').addEventListener('click', () => setMusic(!musicOn()));
   $('btn-pause').addEventListener('click', () => pauseGame());
   const shakeInput = $('setting-shake'), shakeVal = $('setting-shake-val');
   if (shakeInput) {
@@ -915,15 +1063,32 @@ window.__surge = {
   quitToMenu() { quitToMenu(); },
   setMuted(m) { setMuted(m); },
   setFlash(on) { setFlash(on); },
+  setShake(v) {
+    save.settings.shake = clamp(Number(v), 0, 1);
+    persistSave();
+    const input = $('setting-shake');
+    if (input) { input.value = Math.round(save.settings.shake * 100); $('setting-shake-val').textContent = `${input.value}%`; }
+  },
+  setMusic(on) { setMusic(on); },
+  audio() {
+    return { hasAudio: ac !== null, musicOn: musicOn(), musicPlaying: musicTimer !== null, muted };
+  },
   swap() { queueSwap(); },
   nova() { queueNova(); },
   setMove(x, y) { keys.left = x < 0; keys.right = x > 0; keys.up = y < 0; keys.down = y > 0; },
   // Feel state for tests: every value must return to its rest value
-  // (trauma 0, timeScale 1, flashT 0, no shockwaves) once the game sits idle.
+  // (trauma 0, timeScale 1, flashT 0, zoomT 0, no shockwaves) once the
+  // game sits idle. shakeAmp is the effective shake after the user's
+  // shake setting — 0 when the slider is at 0, whatever the trauma.
   feel() {
     return {
-      trauma, timeScale, hitStopT, slowMoT, flashT, swapFlashT,
+      trauma, timeScale, hitStopT, slowMoT, flashT, swapFlashT, zoomT,
+      shakeAmp: trauma * trauma * 14 * (save.settings.shake ?? 1),
+      shakeSetting: save.settings.shake ?? 1,
+      flashEnabled: save.settings.flash !== false,
+      musicOn: musicOn(),
       shockwaves: shockwaves.length,
+      pops: pops.length,
       particlesAlive: particles.reduce((n, p) => n + (p.alive ? 1 : 0), 0),
     };
   },
@@ -933,6 +1098,7 @@ window.__surge = {
 // ---------------------------------------------------------------- init
 bindUI();
 updateMuteLabels();
+updateMusicLabels();
 setFlash(save.settings.flash !== false);
 refreshMenuBest();
 selectedSector = save.unlocked || 1;
