@@ -1,4 +1,4 @@
-// Neon Surge v0.2.1 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.2.2 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -26,7 +26,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.2.1', VERSION === '0.2.1');
+check('physics version is 0.2.2', VERSION === '0.2.2');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -279,16 +279,16 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   check('nova one-shots a spinner', run2.enemies.length === 0);
   check('nova clears a 20-bullet field', run2.bullets.length === 0);
   // M2 post-nova lull fix: after a nova, the next wave arrives within
-  // ~1.5s instead of leaving a ~5s near-empty arena. Sector 1's next
+  // ~1.0s instead of leaving a ~5s near-empty arena. Sector 1's next
   // wave after t=1.0 sits at t=4.5 — a nova at ~t=1.1 must pull it to
-  // ~t=2.6, keeping the remaining spawns' relative spacing.
+  // ~t=2.1, keeping the remaining spawns' relative spacing.
   const run3 = createRun(1);
   while (run3.time < 1.05) stepRun(run3, {});
   run3.player.charge = CHARGE_MAX;
   const nextBefore = run3.spawnQueue[0].t;
   const secondBefore = run3.spawnQueue[1].t;
   stepRun(run3, { nova: true });
-  check('nova pulls the next wave forward (no post-nova lull)', run3.spawnQueue[0].t <= run3.time + 1.6 && run3.spawnQueue[0].t < nextBefore,
+  check('nova pulls the next wave forward (no post-nova lull)', run3.spawnQueue[0].t <= run3.time + 1.2 && run3.spawnQueue[0].t < nextBefore,
     `next=${run3.spawnQueue[0].t.toFixed(2)} at t=${run3.time.toFixed(2)} (was ${nextBefore})`);
   check('nova keeps later waves in relative order', approx(run3.spawnQueue[1].t - run3.spawnQueue[0].t, secondBefore - nextBefore, 1e-9),
     `gap=${(run3.spawnQueue[1].t - run3.spawnQueue[0].t).toFixed(2)} (was ${(secondBefore - nextBefore).toFixed(2)})`);
@@ -367,6 +367,26 @@ check('weaver spread has 5 bullets', WEAVER_SPREAD_COUNT === 5);
   for (let i = 0; i < 60; i++) stepRun(nrun, {});
   check('sniper fires one fast bullet after the telegraph', nrun.bullets.length === 1);
   check('sniper bullet is faster than a drifter bullet', Math.hypot(nrun.bullets[0].vx, nrun.bullets[0].vy) > SECTORS[0].bulletSpeed * 1.2);
+  // REGRESSION (2026-11-24): a sniper spawned through the real spawn queue
+  // must actually reach its hover point and telegraph — the manual test
+  // above builds the sniper with entering:false, so it never caught the
+  // entry bug: sniper speed was 0, the entry glide never moved, snipers
+  // sat off-screen at y=-24 with entering=true forever and never fired
+  // (0 aim events in 12s of sector 5). No sniper may stay entering, and
+  // at least one aim event must fire.
+  const erun = createRun(1);
+  erun.spawnQueue = [{ t: 0.0, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 88 }];
+  let sawAim = false;
+  for (let i = 0; i < 60 * 8; i++) {
+    stepRun(erun, {});
+    if (drainEvents(erun).some((e) => e.type === 'sniper-aim')) sawAim = true;
+  }
+  const esniper = erun.enemies.find((e) => e.type === 'sniper');
+  check('spawned sniper reaches its hover point (entry glide moves it)', !!esniper && esniper.entering === false && esniper.y === esniper.hy,
+    esniper ? `entering=${esniper.entering} y=${esniper.y} hy=${esniper.hy}` : 'no sniper alive');
+  check('spawned sniper telegraphs within 8s (it actually fires)', sawAim);
+  check('every enemy type has a nonzero entry speed', Object.values(ENEMY_TYPES).every((t) => t.speed > 0),
+    JSON.stringify(Object.fromEntries(Object.entries(ENEMY_TYPES).map(([k, v]) => [k, v.speed]))));
   // Bullets despawn off-arena.
   const brun = createRun(1);
   brun.spawnQueue = [{ t: 999, type: 'drifter', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 150 }];

@@ -1,4 +1,4 @@
-// Neon Surge v0.2.1 — headless browser render check.
+// Neon Surge v0.2.2 — headless browser render check.
 // Serves the game dir over local HTTP, loads it in a headless browser, and
 // asserts the M1 core, by hook and by eye:
 //   - the menu renders over a LIVE demo (the attract-mode bot actually
