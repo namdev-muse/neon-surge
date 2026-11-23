@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b0b26">
+<meta name="description" content="Neon Surge — a 2D neon polarity bullet-hell arena. Match your polarity to absorb bullets, charge your nova, clear the sector.">
+<title>Neon Surge — Polarity Bullet-Hell Arena</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game" aria-label="Neon Surge game canvas"></canvas>
+
+<!-- HUD (playing only) -->
+<header id="hud" class="hidden" aria-label="Game status">
+  <div class="hud-left">
+    <span id="hud-sector" class="hud-sector">1 · First Light</span>
+    <span id="hud-best" class="hud-best">Best —</span>
+  </div>
+  <div class="hud-mid">
+    <span id="hud-polarity" class="hud-polarity pol-cyan">◉ CYAN</span>
+    <span class="hud-bar charge-bar" title="Charge — absorb bullets to fill, nova at full"><span id="hud-charge-fill"></span><em id="hud-charge-label">CHARGE 0</em></span>
+    <span class="hud-bar hull-bar" title="Hull — opposite-polarity bullets damage you"><span id="hud-hull-fill"></span><em id="hud-hull-label">HULL 100</em></span>
+  </div>
+  <div class="hud-right">
+    <span id="hud-score" class="hud-score">Score 0</span>
+    <span id="hud-time" class="hud-time">0.0s</span>
+    <button type="button" id="btn-mute-hud" class="hud-btn" aria-label="Toggle sound">Sound: On</button>
+    <button type="button" id="btn-pause" class="hud-btn" aria-label="Pause game">II</button>
+  </div>
+  <div id="hud-toast" class="hud-toast hidden" role="status"></div>
+</header>
+
+<!-- Touch controls (coarse pointers only) -->
+<div id="touch" class="hidden" aria-label="Touch controls">
+  <button type="button" id="touch-swap" aria-label="Swap polarity">SWAP</button>
+  <button type="button" id="touch-nova" aria-label="Fire nova">NOVA</button>
+</div>
+
+<!-- Menu -->
+<section id="menu" class="overlay" aria-label="Main menu">
+  <div class="panel menu-panel">
+    <p class="eyebrow">A POLARITY BULLET-HELL ARENA</p>
+    <h1 class="title"><span class="neon-cyan">NEON</span> <span class="neon-pink">SURGE</span></h1>
+    <p class="tagline">Match the bullet. Absorb the storm. Unleash the nova.</p>
+    <p id="menu-best" class="menu-best">No sorties cleared yet — three sectors of bullet storms await.</p>
+    <div class="menu-actions">
+      <button type="button" id="btn-play" class="btn primary">▶&nbsp; Play</button>
+      <button type="button" id="btn-sectors" class="btn">Sectors</button>
+      <button type="button" id="btn-howto" class="btn">How to Play</button>
+      <button type="button" id="btn-settings" class="btn">Settings</button>
+    </div>
+    <div class="menu-foot">
+      <button type="button" id="btn-mute-menu" class="btn ghost">Sound: On</button>
+      <span class="keys-hint">WASD move · Space swap · X nova · P pause</span>
+    </div>
+  </div>
+</section>
+
+<!-- Sector select -->
+<section id="sectors" class="overlay hidden" aria-label="Sector select">
+  <div class="panel levels-panel">
+    <h2 class="panel-title">Choose a Sector</h2>
+    <div id="sector-grid" class="level-grid"></div>
+    <button type="button" id="btn-sectors-back" class="btn">← Back</button>
+  </div>
+</section>
+
+<!-- How to play -->
+<section id="howto" class="overlay hidden" aria-label="How to play">
+  <div class="panel">
+    <h2 class="panel-title">How to Play</h2>
+    <ul class="howto-list">
+      <li><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> / arrows — fly your wisp. Touch: drag anywhere to steer.</li>
+      <li>Enemy bullets come in <span class="pol-cyan-text">cyan</span> and <span class="pol-magenta-text">magenta</span>. Your wisp has a polarity — shown by its colour and the HUD chip.</li>
+      <li><span class="key">Space</span> / <span class="key">Shift</span> — <strong>swap polarity instantly</strong>. Touch: the SWAP button.</li>
+      <li>Bullets that <strong>match</strong> your polarity are <strong>absorbed</strong> — they build charge and score. Bullets of the <strong>opposite</strong> polarity damage your hull.</li>
+      <li><span class="key">X</span> / click — <strong>nova</strong> (needs a full charge bar). Clears every bullet and damages every enemy. Touch: the NOVA button.</li>
+      <li>There is no gun — the nova is your only weapon. Absorb to earn it, spend it when the sky is full.</li>
+      <li><span class="key">P</span> pause · <span class="key">M</span> mute · <span class="key">R</span> restart sector.</li>
+      <li>Clear a sector to unlock the next. Your best score per sector is saved.</li>
+      <li>Watch the snipers: they glow and draw an aim line before firing a fast shot. Spinner rings mix both colours — no single polarity is safe inside one.</li>
+    </ul>
+    <button type="button" id="btn-howto-back" class="btn">← Back</button>
+  </div>
+</section>
+
+<!-- Settings -->
+<section id="settings" class="overlay hidden" aria-label="Settings">
+  <div class="panel">
+    <h2 class="panel-title">Settings</h2>
+    <div class="setting-row">
+      <button type="button" id="btn-mute-settings" class="btn">Sound: On</button>
+    </div>
+    <div class="setting-row">
+      <label for="setting-shake">Screen shake</label>
+      <input type="range" id="setting-shake" min="0" max="100" step="10" value="100" aria-label="Screen shake amount">
+      <span id="setting-shake-val">100%</span>
+    </div>
+    <div class="setting-row">
+      <button type="button" id="btn-flash-settings" class="btn">Flashing: On</button>
+      <span class="setting-note">Turn off bright flashes</span>
+    </div>
+    <div class="setting-row">
+      <button type="button" id="btn-reset-best" class="btn danger">Clear Best Scores</button>
+    </div>
+    <button type="button" id="btn-settings-back" class="btn">← Back</button>
+  </div>
+</section>
+
+<!-- Pause -->
+<section id="pause" class="overlay hidden" aria-label="Paused">
+  <div class="panel">
+    <h2 class="panel-title">Paused</h2>
+    <div class="menu-actions">
+      <button type="button" id="btn-resume" class="btn primary">Resume</button>
+      <button type="button" id="btn-restart" class="btn">Restart Sector</button>
+      <button type="button" id="btn-quit" class="btn">Quit to Menu</button>
+    </div>
+  </div>
+</section>
+
+<!-- Sector complete -->
+<section id="complete" class="overlay hidden" aria-label="Sector complete">
+  <div class="panel">
+    <h2 id="complete-title" class="panel-title">Sector Clear!</h2>
+    <p id="complete-best" class="complete-best"></p>
+    <div class="complete-stats">
+      <span id="complete-time">Time 0.0s</span>
+      <span id="complete-score">Score 0</span>
+      <span id="complete-absorbs">Absorbed 0</span>
+      <span id="complete-hull">Hull 100</span>
+    </div>
+    <div class="menu-actions">
+      <button type="button" id="btn-next" class="btn primary">Next Sector</button>
+      <button type="button" id="btn-replay" class="btn">Replay</button>
+      <button type="button" id="btn-complete-menu" class="btn">Menu</button>
+    </div>
+  </div>
+</section>
+
+<!-- Sector lost -->
+<section id="gameover" class="overlay hidden" aria-label="Sector lost">
+  <div class="panel">
+    <h2 class="panel-title">Wisp Down</h2>
+    <p id="gameover-sub" class="complete-best"></p>
+    <div class="complete-stats">
+      <span id="gameover-score">Score 0</span>
+      <span id="gameover-time">Time 0.0s</span>
+      <span id="gameover-absorbs">Absorbed 0</span>
+      <span id="gameover-kills">Kills 0</span>
+    </div>
+    <div class="menu-actions">
+      <button type="button" id="btn-retry" class="btn primary">↻ Retry Sector</button>
+      <button type="button" id="btn-gameover-menu" class="btn">Menu</button>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>

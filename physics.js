@@ -1,0 +1,581 @@
+// Neon Surge v0.1.0 — pure simulation (no DOM, no Canvas).
+// 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
+// two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
+// build charge; opposite-polarity bullets damage your hull. Charge powers a
+// NOVA that clears all bullets and damages every enemy. Polarity is the
+// skill — there is no auto-swap, no assist, no gun. The only way to kill an
+// enemy is a well-timed nova, and the only way to earn a nova is to absorb.
+//
+// Anti-slop gates (tests/bot.js):
+//   - decision bot (real swap + nova decisions) clears all 3 sectors
+//   - no-swap bot (same movement/nova, never swaps) loses all 3
+//   - sit-still bot loses all 3
+// A sector the no-swap bot clears is not done — tighten the bullet mix.
+
+export const VERSION = '0.1.0';
+export const ARENA_W = 960;
+export const ARENA_H = 600;
+export const DT = 1 / 60;
+export const SAVE_KEY = 'neon-surge-save-v1';
+export const SAVE_VERSION = 1;
+
+// --- player ---
+export const PLAYER_R = 13;
+export const PLAYER_SPEED = 340;      // px/s top speed
+export const PLAYER_ACCEL = 2800;     // px/s^2 toward input direction
+export const PLAYER_FRICTION = 2600;  // px/s^2 decel with no input
+export const SWAP_COOLDOWN = 0.12;    // s — swap still feels instant
+export const HULL_MAX = 100;
+export const CHARGE_MAX = 100;
+export const NOVA_COST = 65;         // ~11 absorbs per nova — charge is earned, not given
+export const NOVA_DAMAGE = 100;
+export const NOVA_INVULN = 0.6;       // s of safety after a nova
+export const ABSORB_CHARGE = 6;       // charge per absorbed bullet
+export const ABSORB_SCORE = 10;
+export const ABSORB_RADIUS = 27;      // generous catch radius
+export const BULLET_R = 6;
+export const HIT_DAMAGE = 16;         // hull lost to an opposite bullet
+export const HIT_INVULN = 0.45;       // s of safety after a hit
+export const CONTACT_DAMAGE = 15;     // hull lost touching an enemy
+export const CONTACT_INVULN = 0.8;
+export const KILL_CHARGE = 0;         // charge comes ONLY from absorbing — the core loop
+export const NOVA_CLEAR_CHARGE = 0;   // a nova earns nothing by itself; absorbs pay for the next one
+export const KILL_SCORE = { drifter: 100, weaver: 150, sniper: 150, spinner: 300 };
+export const COMBO_WINDOW = 1.2;      // s — absorbs inside the window chain
+
+// --- enemies ---
+// hp / radius / score / base speed / fire interval / bullet-speed factor
+export const ENEMY_TYPES = {
+  drifter: { hp: 40, r: 16, score: 100, speed: 46, fireInterval: 1.9, bulletFactor: 1.0, fireKind: 'aimed' },
+  weaver: { hp: 60, r: 17, score: 150, speed: 72, fireInterval: 2.0, bulletFactor: 1.0, fireKind: 'spread3' },
+  sniper: { hp: 50, r: 15, score: 150, speed: 0, fireInterval: 2.6, bulletFactor: 1.75, fireKind: 'aimed' },
+  spinner: { hp: 100, r: 22, score: 300, speed: 26, fireInterval: 2.7, bulletFactor: 0.9, fireKind: 'ring' },
+};
+export const SPINNER_RING_COUNT = 14; // ring bullets, alternating polarity
+export const WEAVER_SPREAD_COUNT = 5;
+export const WEAVER_SPREAD_ANGLE = 0.2; // rad between spread bullets
+export const AIM_LEAD = 0.25;         // s — aimed bullets lead the player
+export const SNIPER_TELEGRAPH = 0.65; // s of warning before a sniper fires
+
+// --- game feel tiers (same recipe as the 3D skill; engine-agnostic) ---
+export const FEEDBACK = {
+  absorb: { trauma: 0.08, hitStop: 0, layers: ['sound', 'particles', 'pop'] },
+  swap: { trauma: 0.05, hitStop: 0, layers: ['sound', 'flash-ring'] },
+  hit: { trauma: 0.45, hitStop: 0.05, layers: ['sound', 'particles', 'shake', 'flash', 'pop'] },
+  kill: { trauma: 0.25, hitStop: 0.03, layers: ['sound', 'particles', 'shake', 'pop'] },
+  nova: { trauma: 0.85, hitStop: 0.12, layers: ['sound', 'particles', 'shake', 'flash', 'slow-mo', 'shockwave', 'pop'] },
+  clear: { trauma: 0.4, hitStop: 0.08, layers: ['sound', 'particles', 'shake', 'flash', 'pop'] },
+};
+export const FEEDBACK_TIERS = {
+  small: { trauma: [0.10, 0.20], hitStop: 0 },
+  medium: { trauma: [0.30, 0.50], hitStop: [0.04, 0.06] },
+  large: { trauma: [0.70, 1.00], hitStop: [0.10, 0.15] },
+};
+export const FEEDBACK_LAYERS = ['sound', 'particles', 'shake', 'flash', 'pop', 'slow-mo', 'shockwave', 'flash-ring'];
+
+export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Letterbox fit of the logical arena into a viewport. Screen space is the
+// truth for movement tests (Drift M2 lesson): moving left must move the
+// wisp left ON SCREEN, not just in world coordinates.
+export function worldToScreen(x, y, viewW, viewH) {
+  const scale = Math.min(viewW / ARENA_W, viewH / ARENA_H);
+  const ox = (viewW - ARENA_W * scale) / 2;
+  const oy = (viewH - ARENA_H * scale) / 2;
+  return { x: ox + x * scale, y: oy + y * scale, scale, ox, oy };
+}
+
+// --- sectors -------------------------------------------------------------
+// spawns: { t, type, x, y, pol, hx, hy, telegraph? }
+//   x,y = entry point (often just outside the arena); hx,hy = hover/park
+//   point the enemy settles at. telegraph = toast text shown when it spawns.
+// bulletSpeed = base px/s for this sector's bullets.
+export const SECTORS = [
+  {
+    id: 1, name: 'First Light', accent: '#22d3ee', par: 60,
+    hint: 'Slow cyan bullets first. Absorb them — when magenta comes, swap.',
+    bulletSpeed: 160,
+    spawns: [
+      { t: 1.0, type: 'drifter', x: 240, y: -24, pol: 'cyan', hx: 240, hy: 150 },
+      { t: 1.0, type: 'drifter', x: 720, y: -24, pol: 'cyan', hx: 720, hy: 150 },
+      { t: 4.5, type: 'drifter', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 110 },
+      { t: 8.0, type: 'weaver', x: -24, y: 300, pol: 'cyan', hx: 200, hy: 300 },
+      { t: 11.0, type: 'drifter', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 185,
+        telegraph: 'MAGENTA INCOMING — press SPACE to swap!' },
+      { t: 12.0, type: 'drifter', x: 660, y: -24, pol: 'magenta', hx: 660, hy: 185 },
+      { t: 15.5, type: 'weaver', x: 984, y: 330, pol: 'magenta', hx: 760, hy: 330 },
+      { t: 15.5, type: 'weaver', x: -24, y: 420, pol: 'magenta', hx: 220, hy: 420 },
+      { t: 18.5, type: 'weaver', x: -24, y: 200, pol: 'magenta', hx: 220, hy: 200 },
+      { t: 21.0, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 88 },
+      { t: 21.0, type: 'sniper', x: 840, y: -24, pol: 'cyan', hx: 840, hy: 88 },
+      { t: 24.0, type: 'spinner', x: 480, y: -30, pol: 'cyan', hx: 480, hy: 175 },
+      { t: 27.0, type: 'drifter', x: 200, y: -24, pol: 'magenta', hx: 200, hy: 210 },
+      { t: 27.0, type: 'drifter', x: 760, y: -24, pol: 'cyan', hx: 760, hy: 210 },
+      { t: 30.0, type: 'weaver', x: -24, y: 420, pol: 'cyan', hx: 240, hy: 420 },
+      { t: 33.0, type: 'spinner', x: 660, y: -30, pol: 'magenta', hx: 660, hy: 250 },
+      { t: 33.0, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 140 },
+    ],
+  },
+  {
+    id: 2, name: 'Crossfire', accent: '#f472b6', par: 80,
+    hint: 'Mixed fire from both sides. Swap to the nearest threat, nova when the sky is full.',
+    bulletSpeed: 215,
+    spawns: [
+      { t: 1.0, type: 'weaver', x: -24, y: 260, pol: 'cyan', hx: 210, hy: 260 },
+      { t: 1.0, type: 'weaver', x: 984, y: 340, pol: 'magenta', hx: 750, hy: 340 },
+      { t: 3.5, type: 'drifter', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 160 },
+      { t: 3.5, type: 'drifter', x: 660, y: -24, pol: 'magenta', hx: 660, hy: 160 },
+      { t: 6.5, type: 'sniper', x: 840, y: -24, pol: 'magenta', hx: 840, hy: 88 },
+      { t: 6.5, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 88 },
+      { t: 6.5, type: 'weaver', x: -24, y: 480, pol: 'magenta', hx: 210, hy: 480 },
+      { t: 10.0, type: 'spinner', x: 480, y: -30, pol: 'magenta', hx: 480, hy: 180 },
+      { t: 10.0, type: 'weaver', x: -24, y: 460, pol: 'magenta', hx: 220, hy: 460 },
+      { t: 13.5, type: 'weaver', x: -24, y: 200, pol: 'cyan', hx: 210, hy: 200 },
+      { t: 13.5, type: 'weaver', x: 984, y: 420, pol: 'magenta', hx: 750, hy: 420 },
+      { t: 17.0, type: 'drifter', x: 240, y: -24, pol: 'magenta', hx: 240, hy: 190 },
+      { t: 17.0, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 140 },
+      { t: 17.0, type: 'drifter', x: 720, y: -24, pol: 'cyan', hx: 720, hy: 190 },
+      { t: 21.0, type: 'sniper', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 70 },
+      { t: 21.0, type: 'sniper', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 90 },
+      { t: 24.5, type: 'spinner', x: 300, y: -30, pol: 'cyan', hx: 300, hy: 205 },
+      { t: 24.5, type: 'spinner', x: 660, y: -30, pol: 'magenta', hx: 660, hy: 205 },
+      { t: 24.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 260 },
+      { t: 28.0, type: 'weaver', x: -24, y: 360, pol: 'magenta', hx: 210, hy: 360 },
+      { t: 28.0, type: 'weaver', x: 984, y: 240, pol: 'magenta', hx: 750, hy: 240 },
+      { t: 31.0, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 230 },
+    ],
+  },
+  {
+    id: 3, name: 'Vortex', accent: '#a78bfa', par: 95,
+    hint: 'Rings everywhere. Ride the gaps, absorb the stream, nova the spinners.',
+    bulletSpeed: 250,
+    spawns: [
+      { t: 1.0, type: 'spinner', x: 480, y: -30, pol: 'cyan', hx: 480, hy: 165 },
+      { t: 3.0, type: 'weaver', x: -24, y: 260, pol: 'magenta', hx: 210, hy: 260 },
+      { t: 3.0, type: 'weaver', x: 984, y: 340, pol: 'magenta', hx: 750, hy: 340 },
+      { t: 6.0, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 82 },
+      { t: 6.0, type: 'sniper', x: 840, y: -24, pol: 'cyan', hx: 840, hy: 82 },
+      { t: 6.0, type: 'sniper', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 66 },
+      { t: 9.5, type: 'drifter', x: 200, y: -24, pol: 'cyan', hx: 200, hy: 170 },
+      { t: 9.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 130 },
+      { t: 9.5, type: 'drifter', x: 760, y: -24, pol: 'magenta', hx: 760, hy: 170 },
+      { t: 9.5, type: 'weaver', x: 984, y: 480, pol: 'magenta', hx: 750, hy: 480 },
+      { t: 13.0, type: 'spinner', x: 300, y: -30, pol: 'magenta', hx: 300, hy: 220 },
+      { t: 13.0, type: 'spinner', x: 660, y: -30, pol: 'cyan', hx: 660, hy: 220 },
+      { t: 17.0, type: 'weaver', x: -24, y: 200, pol: 'cyan', hx: 210, hy: 200 },
+      { t: 17.0, type: 'weaver', x: 984, y: 420, pol: 'magenta', hx: 750, hy: 420 },
+      { t: 17.0, type: 'weaver', x: -24, y: 460, pol: 'magenta', hx: 210, hy: 460 },
+      { t: 21.0, type: 'sniper', x: 200, y: -24, pol: 'cyan', hx: 200, hy: 90 },
+      { t: 21.0, type: 'sniper', x: 760, y: -24, pol: 'magenta', hx: 760, hy: 90 },
+      { t: 25.0, type: 'spinner', x: 480, y: -30, pol: 'magenta', hx: 480, hy: 265 },
+      { t: 28.5, type: 'drifter', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 215 },
+      { t: 28.5, type: 'drifter', x: 660, y: -24, pol: 'cyan', hx: 660, hy: 215 },
+      { t: 28.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 250 },
+      { t: 28.5, type: 'sniper', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 60 },
+      { t: 32.0, type: 'weaver', x: 984, y: 240, pol: 'magenta', hx: 750, hy: 240 },
+      { t: 32.0, type: 'weaver', x: -24, y: 360, pol: 'cyan', hx: 210, hy: 360 },
+    ],
+  },
+];
+
+export function sectorById(id) { return SECTORS.find((s) => s.id === id) || null; }
+
+// --- run state -----------------------------------------------------------
+let nextEnemyId = 1;
+
+export function createRun(sectorId, opts = {}) {
+  const def = sectorById(sectorId);
+  if (!def) throw new Error(`no sector ${sectorId}`);
+  const rng = mulberry32(opts.seed ?? sectorId * 7919 + 13);
+  return {
+    sectorId, def, rng,
+    time: 0, phase: 'playing', // 'playing' | 'clear' | 'lost'
+    player: {
+      x: ARENA_W / 2, y: ARENA_H - 90, vx: 0, vy: 0,
+      pol: 'cyan', hull: HULL_MAX, charge: 0,
+      invuln: 0, swapCd: 0, novaCd: 0,
+    },
+    enemies: [], bullets: [],
+    spawnQueue: def.spawns.map((s) => ({ ...s })),
+    score: 0, absorbs: 0, kills: 0, novas: 0, hits: 0,
+    combo: 0, comboT: 0, maxCombo: 0,
+    events: [], clearTime: null, clearBonus: 0,
+  };
+}
+
+function pushEvent(run, ev) { run.events.push(ev); }
+export function drainEvents(run) { const evs = run.events; run.events = []; return evs; }
+
+function spawnEnemy(run, def) {
+  const t = ENEMY_TYPES[def.type];
+  const e = {
+    id: nextEnemyId++, type: def.type, x: def.x, y: def.y,
+    hx: def.hx, hy: def.hy, pol: def.pol,
+    hp: t.hp, maxHp: t.hp, r: t.r,
+    fireT: 1.1 + run.rng() * 0.6, // first shot a beat after arriving
+    age: 0, angle: run.rng() * Math.PI * 2,
+    entering: true, telegraphT: 0, swayPhase: run.rng() * Math.PI * 2,
+  };
+  run.enemies.push(e);
+  pushEvent(run, { type: 'spawn', enemyType: def.type, pol: def.pol, x: e.x, y: e.y });
+  if (def.telegraph) pushEvent(run, { type: 'telegraph', text: def.telegraph });
+  return e;
+}
+
+function fireBullet(run, x, y, vx, vy, pol) {
+  run.bullets.push({ x, y, vx, vy, pol, r: BULLET_R, age: 0 });
+}
+
+function aimedVelocity(run, e, speed) {
+  const p = run.player;
+  const tx = p.x + p.vx * AIM_LEAD, ty = p.y + p.vy * AIM_LEAD;
+  const dx = tx - e.x, dy = ty - e.y;
+  const d = Math.hypot(dx, dy) || 1;
+  return { vx: (dx / d) * speed, vy: (dy / d) * speed, angle: Math.atan2(dy, dx) };
+}
+
+function enemyFire(run, e) {
+  const t = ENEMY_TYPES[e.type];
+  const speed = run.def.bulletSpeed * t.bulletFactor;
+  if (e.type === 'drifter' || e.type === 'sniper') {
+    const v = aimedVelocity(run, e, speed);
+    fireBullet(run, e.x, e.y, v.vx, v.vy, e.pol);
+    if (e.type === 'sniper') pushEvent(run, { type: 'sniper-shot', x: e.x, y: e.y, pol: e.pol });
+  } else if (e.type === 'weaver') {
+    const v = aimedVelocity(run, e, speed);
+    const half = Math.floor(WEAVER_SPREAD_COUNT / 2);
+    for (let i = -half; i <= half; i++) {
+      const a = v.angle + i * WEAVER_SPREAD_ANGLE;
+      fireBullet(run, e.x, e.y, Math.cos(a) * speed, Math.sin(a) * speed, e.pol);
+    }
+  } else if (e.type === 'spinner') {
+    // Ring: alternating polarity, so no single polarity is safe inside it.
+    for (let i = 0; i < SPINNER_RING_COUNT; i++) {
+      const a = e.angle + (i / SPINNER_RING_COUNT) * Math.PI * 2;
+      const pol = i % 2 === 0 ? e.pol : (e.pol === 'cyan' ? 'magenta' : 'cyan');
+      fireBullet(run, e.x, e.y, Math.cos(a) * speed, Math.sin(a) * speed, pol);
+    }
+    pushEvent(run, { type: 'ring', x: e.x, y: e.y, pol: e.pol });
+  }
+}
+
+function updateEnemy(run, e) {
+  const t = ENEMY_TYPES[e.type];
+  e.age += DT;
+  // Entry: glide to the hover/park point, then settle.
+  if (e.entering) {
+    const dx = e.hx - e.x, dy = e.hy - e.y;
+    const d = Math.hypot(dx, dy);
+    const step = t.speed * 2.2 * DT;
+    if (d <= step + 4) { e.x = e.hx; e.y = e.hy; e.entering = false; }
+    else { e.x += (dx / d) * step; e.y += (dy / d) * step; }
+    return;
+  }
+  if (e.type === 'drifter') {
+    // Slow strafe around the hover point.
+    e.x = e.hx + Math.sin(e.age * 0.5 + e.swayPhase) * 46;
+    e.y = e.hy + Math.sin(e.age * 0.8 + e.swayPhase) * 14;
+  } else if (e.type === 'weaver') {
+    e.x = e.hx + Math.sin(e.age * 0.7 + e.swayPhase) * 90;
+    e.y = e.hy + Math.sin(e.age * 1.3 + e.swayPhase) * 42;
+  } else if (e.type === 'spinner') {
+    e.angle += DT * 1.4;
+    e.x = e.hx + Math.sin(e.age * 0.4 + e.swayPhase) * 24;
+    e.y = e.hy + Math.cos(e.age * 0.55 + e.swayPhase) * 16;
+  }
+  // Sniper parks still and telegraphs before firing.
+  if (e.type === 'sniper') {
+    if (e.telegraphT > 0) {
+      e.telegraphT -= DT;
+      if (e.telegraphT <= 0) enemyFire(run, e);
+    } else {
+      e.fireT -= DT;
+      if (e.fireT <= 0) { e.telegraphT = SNIPER_TELEGRAPH; e.fireT = t.fireInterval; pushEvent(run, { type: 'sniper-aim', x: e.x, y: e.y, pol: e.pol }); }
+    }
+    return;
+  }
+  e.fireT -= DT;
+  if (e.fireT <= 0) { enemyFire(run, e); e.fireT = t.fireInterval * (0.92 + run.rng() * 0.16); }
+}
+
+function doNova(run) {
+  const p = run.player;
+  p.charge -= NOVA_COST;
+  p.novaCd = 0.5;
+  p.invuln = Math.max(p.invuln, NOVA_INVULN);
+  run.novas++;
+  const cleared = run.bullets.length;
+  run.bullets = [];
+  let kills = 0;
+  for (const e of run.enemies) e.hp -= NOVA_DAMAGE;
+  const dead = run.enemies.filter((e) => e.hp <= 0);
+  for (const e of dead) {
+    kills++;
+    run.kills++;
+    run.score += KILL_SCORE[e.type];
+    p.charge = clamp(p.charge + KILL_CHARGE, 0, CHARGE_MAX);
+    pushEvent(run, { type: 'kill', enemyType: e.type, x: e.x, y: e.y, score: KILL_SCORE[e.type], pol: e.pol });
+  }
+  run.enemies = run.enemies.filter((e) => e.hp > 0);
+  p.charge = clamp(p.charge + cleared * NOVA_CLEAR_CHARGE, 0, CHARGE_MAX);
+  pushEvent(run, { type: 'nova', cleared, kills, charge: p.charge });
+}
+
+// input: { mx, my, swap, nova } — mx/my in [-1, 1], swap/nova booleans.
+export function stepRun(run, input = {}) {
+  if (run.phase !== 'playing') return;
+  const p = run.player;
+  run.time += DT;
+
+  // Spawns.
+  while (run.spawnQueue.length > 0 && run.spawnQueue[0].t <= run.time) {
+    spawnEnemy(run, run.spawnQueue.shift());
+  }
+
+  // Polarity swap — instant, no assist: only a real input swaps.
+  if (input.swap && p.swapCd <= 0) {
+    p.pol = p.pol === 'cyan' ? 'magenta' : 'cyan';
+    p.swapCd = SWAP_COOLDOWN;
+    pushEvent(run, { type: 'swap', pol: p.pol });
+  }
+  // Nova — charge-powered only.
+  if (input.nova && p.charge >= NOVA_COST && p.novaCd <= 0) doNova(run);
+
+  // Movement: accelerate toward input, friction when idle, clamp to arena.
+  const mx = clamp(input.mx || 0, -1, 1), my = clamp(input.my || 0, -1, 1);
+  const mag = Math.hypot(mx, my);
+  if (mag > 0.01) {
+    const nx = mx / Math.max(mag, 1), ny = my / Math.max(mag, 1);
+    p.vx += nx * PLAYER_ACCEL * DT;
+    p.vy += ny * PLAYER_ACCEL * DT;
+    const sp = Math.hypot(p.vx, p.vy);
+    if (sp > PLAYER_SPEED) { p.vx = (p.vx / sp) * PLAYER_SPEED; p.vy = (p.vy / sp) * PLAYER_SPEED; }
+  } else {
+    const sp = Math.hypot(p.vx, p.vy);
+    if (sp > 0) {
+      const dec = PLAYER_FRICTION * DT;
+      if (sp <= dec) { p.vx = 0; p.vy = 0; }
+      else { p.vx -= (p.vx / sp) * dec; p.vy -= (p.vy / sp) * dec; }
+    }
+  }
+  p.x = clamp(p.x + p.vx * DT, PLAYER_R, ARENA_W - PLAYER_R);
+  p.y = clamp(p.y + p.vy * DT, PLAYER_R, ARENA_H - PLAYER_R);
+  if (p.x === PLAYER_R || p.x === ARENA_W - PLAYER_R) p.vx = 0;
+  if (p.y === PLAYER_R || p.y === ARENA_H - PLAYER_R) p.vy = 0;
+
+  // Timers.
+  p.invuln = Math.max(0, p.invuln - DT);
+  p.swapCd = Math.max(0, p.swapCd - DT);
+  p.novaCd = Math.max(0, p.novaCd - DT);
+  run.comboT -= DT;
+  if (run.comboT <= 0) run.combo = 0;
+
+  // Enemies.
+  for (const e of [...run.enemies]) updateEnemy(run, e);
+
+  // Bullets.
+  for (const b of run.bullets) { b.x += b.vx * DT; b.y += b.vy * DT; b.age += DT; }
+  run.bullets = run.bullets.filter((b) => b.x > -40 && b.x < ARENA_W + 40 && b.y > -40 && b.y < ARENA_H + 40);
+
+  // Bullet vs player: absorb same polarity, damage opposite.
+  for (let i = run.bullets.length - 1; i >= 0; i--) {
+    const b = run.bullets[i];
+    const dx = b.x - p.x, dy = b.y - p.y;
+    const d2 = dx * dx + dy * dy;
+    if (b.pol === p.pol) {
+      if (d2 < ABSORB_RADIUS * ABSORB_RADIUS) {
+        run.bullets.splice(i, 1);
+        p.charge = clamp(p.charge + ABSORB_CHARGE, 0, CHARGE_MAX);
+        run.absorbs++;
+        run.score += ABSORB_SCORE;
+        run.combo++; run.comboT = COMBO_WINDOW;
+        run.maxCombo = Math.max(run.maxCombo, run.combo);
+        pushEvent(run, { type: 'absorb', pol: b.pol, x: b.x, y: b.y, charge: p.charge, combo: run.combo });
+      }
+    } else if (p.invuln <= 0 && d2 < (PLAYER_R + b.r) * (PLAYER_R + b.r)) {
+      run.bullets.splice(i, 1);
+      p.hull -= HIT_DAMAGE;
+      p.invuln = HIT_INVULN;
+      run.hits++;
+      run.combo = 0;
+      pushEvent(run, { type: 'hit', pol: b.pol, x: b.x, y: b.y, hull: p.hull });
+    }
+  }
+
+  // Enemy contact: touching an enemy hurts.
+  if (p.invuln <= 0) {
+    for (const e of run.enemies) {
+      const dx = p.x - e.x, dy = p.y - e.y;
+      const rr = PLAYER_R + e.r;
+      if (dx * dx + dy * dy < rr * rr) {
+        p.hull -= CONTACT_DAMAGE;
+        p.invuln = CONTACT_INVULN;
+        run.hits++;
+        const d = Math.hypot(dx, dy) || 1;
+        p.vx = (dx / d) * 320; p.vy = (dy / d) * 320;
+        pushEvent(run, { type: 'hit', pol: e.pol, x: p.x, y: p.y, hull: p.hull, contact: true });
+        break;
+      }
+    }
+  }
+
+  // Lose: hull gone. Checked BEFORE the win, so dying on the same tick
+  // the last enemy falls is a loss, not a clear.
+  if (p.hull <= 0) {
+    p.hull = 0;
+    run.phase = 'lost';
+    pushEvent(run, { type: 'lost', score: run.score, time: run.time });
+    return;
+  }
+  // Win: every spawn done and every enemy dead.
+  if (run.spawnQueue.length === 0 && run.enemies.length === 0) {
+    run.phase = 'clear';
+    run.clearTime = run.time;
+    const timeBonus = Math.max(0, Math.round((run.def.par - run.time) * 15));
+    const hullBonus = p.hull * 5;
+    run.clearBonus = timeBonus + hullBonus;
+    run.score += run.clearBonus;
+    pushEvent(run, { type: 'clear', score: run.score, time: run.time, timeBonus, hullBonus });
+    return;
+  }
+}
+
+export function cloneRun(run) {
+  return JSON.parse(JSON.stringify({ ...run, rng: undefined, events: [] }));
+}
+
+// --- saves ---------------------------------------------------------------
+export function defaultSave() {
+  return { version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 1, flash: true, muted: false } };
+}
+export function serializeSave(save) { return JSON.stringify(save); }
+export function parseSave(raw) {
+  try {
+    const s = JSON.parse(raw);
+    if (!s || s.version !== SAVE_VERSION || typeof s.best !== 'object') return defaultSave();
+    return { ...defaultSave(), ...s, best: { ...s.best }, settings: { ...defaultSave().settings, ...(s.settings || {}) } };
+  } catch { return defaultSave(); }
+}
+export function recordBest(save, sectorId, score, time, hull) {
+  const prev = save.best[sectorId];
+  const better = !prev || score > prev.score;
+  if (better) save.best[sectorId] = { score, time: Math.round(time * 100) / 100, hull };
+  if (save.unlocked < Math.min(SECTORS.length, sectorId + 1)) save.unlocked = Math.min(SECTORS.length, sectorId + 1);
+  return better;
+}
+export function isSectorUnlocked(save, sectorId) { return sectorId <= (save.unlocked || 1); }
+export function bestFor(save, sectorId) { return save.best[sectorId] || null; }
+
+// --- bots ----------------------------------------------------------------
+// All bots play ONLY through the public stepRun input hooks — no peeking at
+// internals beyond the run state a player could see (positions, polarity,
+// charge, hull). The decision bot makes real swap + nova decisions.
+export function stationaryPolicy() { return { mx: 0, my: 0, swap: false, nova: false }; }
+
+function steering(run, opts) {
+  const p = run.player;
+  const input = { mx: 0, my: 0, swap: false, nova: false };
+  // Nova: spend charge when the sky is full, the field is crowded, or
+  // the hull is hurting — a nova is worth more than a saved charge.
+  // Tail rule: once every spawn is out, any living enemy is worth a nova
+  // (a nova kills everything alive, so waiting only feeds the bullet storm).
+  if (p.charge >= NOVA_COST && run.enemies.length >= 1
+    && (run.enemies.length >= 3 || run.bullets.length >= 28 || p.hull <= 35
+      || run.spawnQueue.length === 0)) {
+    input.nova = true;
+  }
+  // Polarity: match the nearest bullet — the immediate threat is the one
+  // that decides the next swap. (No-swap bot skips this entirely.)
+  if (opts.swap) {
+    let nearest = null, nd = 1e9;
+    for (const b of run.bullets) {
+      const d = Math.hypot(b.x - p.x, b.y - p.y);
+      if (d < nd) { nd = d; nearest = b; }
+    }
+    if (nearest && nd < 240 && nearest.pol !== p.pol) input.swap = true;
+  }
+  // Steering: flee opposite bullets, chase same-polarity ones to absorb,
+  // keep enemies at arm's length, stay off the walls.
+  let sx = 0, sy = 0;
+  for (const b of run.bullets) {
+    const dx = p.x - b.x, dy = p.y - b.y;
+    const d = Math.hypot(dx, dy) || 1;
+    if (b.pol !== p.pol && d < 230) {
+      const w = ((230 - d) / 230) * 2.4;
+      sx += (dx / d) * w; sy += (dy / d) * w;
+    } else if (b.pol === p.pol && d < 170 && d > 32) {
+      const w = ((170 - d) / 170) * 0.9;
+      sx -= (dx / d) * w; sy -= (dy / d) * w;
+    }
+  }
+  for (const e of run.enemies) {
+    const dx = p.x - e.x, dy = p.y - e.y;
+    const d = Math.hypot(dx, dy) || 1;
+    if (d < 80) { const w = ((80 - d) / 80) * 2.0; sx += (dx / d) * w; sy += (dy / d) * w; }
+  }
+  const m = 70; // wall margin
+  if (p.x < m) sx += (m - p.x) / m * 1.6;
+  if (p.x > ARENA_W - m) sx -= (p.x - (ARENA_W - m)) / m * 1.6;
+  if (p.y < m) sy += (m - p.y) / m * 1.6;
+  if (p.y > ARENA_H - m) sy -= (p.y - (ARENA_H - m)) / m * 1.6;
+  // Idle drift toward the middle of the arena, so the bot never camps a corner.
+  if (Math.hypot(sx, sy) < 0.15) {
+    sx += (ARENA_W / 2 - p.x) / ARENA_W * 0.5;
+    sy += (ARENA_H * 0.55 - p.y) / ARENA_H * 0.5;
+  }
+  const len = Math.hypot(sx, sy);
+  if (len > 0.01) { input.mx = sx / len; input.my = sy / len; }
+  return input;
+}
+
+export function createDecisionBot() {
+  return { input: (run) => steering(run, { swap: true }) };
+}
+export function createNoSwapBot() {
+  return { input: (run) => steering(run, { swap: false }) };
+}
+export function createSitStillBot() {
+  return { input: () => stationaryPolicy() };
+}
+// Random masher: moves randomly, swaps at random, novas at random. Must die.
+export function createRandomBot(seed = 1) {
+  const rng = mulberry32(seed);
+  let dir = { x: 0, y: 0 }, dirT = 0;
+  return {
+    input: (run) => {
+      dirT -= DT;
+      if (dirT <= 0) {
+        const a = rng() * Math.PI * 2;
+        dir = { x: Math.cos(a), y: Math.sin(a) };
+        dirT = 0.3 + rng() * 0.7;
+      }
+      return { mx: dir.x, my: dir.y, swap: rng() < 0.02, nova: rng() < 0.01 };
+    },
+  };
+}
+
+export function simulateRun(sectorId, botFactory, opts = {}) {
+  const maxSteps = Math.round((opts.maxSeconds || 150) * 60);
+  const run = createRun(sectorId, { seed: opts.seed });
+  const bot = botFactory();
+  let steps = 0;
+  while (run.phase === 'playing' && steps < maxSteps) {
+    stepRun(run, bot.input(run));
+    steps++;
+  }
+  return {
+    won: run.phase === 'clear', lost: run.phase === 'lost',
+    time: run.time, score: run.score, hull: run.player.hull,
+    absorbs: run.absorbs, kills: run.kills, novas: run.novas, hits: run.hits,
+    maxCombo: run.maxCombo, steps, timedOut: run.phase === 'playing',
+  };
+}
