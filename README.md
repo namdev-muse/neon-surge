@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.2.0 — M2 sector craft, 12 sectors)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v0.2.1 — M2 sector craft, 12 sectors)
 
 ## How to play
 

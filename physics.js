@@ -1,4 +1,4 @@
-// Neon Surge v0.2.0 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.2.1 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -12,7 +12,7 @@
 //   - sit-still bot loses all 12
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.2.1';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -55,7 +55,8 @@ export const SPINNER_RING_COUNT = 14; // ring bullets, alternating polarity
 export const WEAVER_SPREAD_COUNT = 5;
 export const WEAVER_SPREAD_ANGLE = 0.2; // rad between spread bullets
 export const AIM_LEAD = 0.25;         // s — aimed bullets lead the player
-export const SNIPER_TELEGRAPH = 0.65; // s of warning before a sniper fires
+export const SNIPER_TELEGRAPH = 0.85; // s of warning before a sniper fires (M2: 0.65 was too brief to read in a bullet storm)
+export const SURGE_WINDOW = 4.0;      // s after a nova during which new spawns arrive already fighting (M2 post-nova lull fix)
 
 // --- game feel tiers (same recipe as the 3D skill; engine-agnostic) ---
 export const FEEDBACK = {
@@ -228,12 +229,21 @@ export const SECTORS = [
     spawns: [
       { t: 1.0, type: 'drifter', x: 240, y: -24, pol: 'cyan', hx: 240, hy: 150 },
       { t: 1.0, type: 'drifter', x: 720, y: -24, pol: 'magenta', hx: 720, hy: 150 },
+      // M2: the live playtest starved here — score 0, absorbed 0, charge 0
+      // for the whole run, because cyan food dried up at t=6.5 while the
+      // magenta snipers kept coming. Three cyan drifters/weavers added in
+      // the opening so the absorb→nova economy can build before the
+      // magenta flood; the magenta pressure that the no-swap gate needs
+      // is untouched (17 magenta spawns, same as before).
+      { t: 2.0, type: 'drifter', x: 480, y: -24, pol: 'cyan', hx: 480, hy: 170 },
       { t: 3.5, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 88 },
       { t: 3.5, type: 'sniper', x: 840, y: -24, pol: 'cyan', hx: 840, hy: 88 },
       { t: 6.5, type: 'weaver', x: -24, y: 300, pol: 'magenta', hx: 210, hy: 300 },
       { t: 6.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 170 },
+      { t: 8.0, type: 'drifter', x: 360, y: -24, pol: 'cyan', hx: 360, hy: 200 },
       { t: 9.5, type: 'sniper', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 66 },
       { t: 9.5, type: 'weaver', x: 984, y: 420, pol: 'magenta', hx: 750, hy: 420 },
+      { t: 11.0, type: 'weaver', x: -24, y: 300, pol: 'cyan', hx: 210, hy: 300 },
       { t: 12.5, type: 'drifter', x: 300, y: -24, pol: 'magenta', hx: 300, hy: 200 },
       { t: 12.5, type: 'drifter', x: 660, y: -24, pol: 'magenta', hx: 660, hy: 200 },
       { t: 15.5, type: 'sniper', x: 200, y: -24, pol: 'cyan', hx: 200, hy: 90 },
@@ -477,12 +487,16 @@ export const SECTORS = [
     hint: 'The final gauntlet — every enemy, every pattern, at full speed. The Surge itself. Clear this and the arena is yours.',
     bulletSpeed: 335,
     spawns: [
+      // M2: opening softened like sector 2's (live playtest 03:55: 4 hits
+      // in the first ~5s, the hottest opening in the game). The magenta
+      // weaver joins at t=2.5 instead of t=1.0 and the second spinner at
+      // t=6.0 instead of t=4.5. Counts unchanged.
       { t: 1.0, type: 'spinner', x: 480, y: -30, pol: 'cyan', hx: 480, hy: 170 },
-      { t: 1.0, type: 'weaver', x: -24, y: 300, pol: 'magenta', hx: 210, hy: 300 },
+      { t: 2.5, type: 'weaver', x: -24, y: 300, pol: 'magenta', hx: 210, hy: 300 },
       { t: 2.5, type: 'weaver', x: 984, y: 360, pol: 'cyan', hx: 750, hy: 360 },
       { t: 2.5, type: 'drifter', x: 480, y: -24, pol: 'magenta', hx: 480, hy: 150 },
       { t: 4.5, type: 'spinner', x: 300, y: -30, pol: 'magenta', hx: 300, hy: 220 },
-      { t: 4.5, type: 'spinner', x: 660, y: -30, pol: 'cyan', hx: 660, hy: 220 },
+      { t: 6.0, type: 'spinner', x: 660, y: -30, pol: 'cyan', hx: 660, hy: 220 },
       { t: 7.0, type: 'sniper', x: 120, y: -24, pol: 'magenta', hx: 120, hy: 88 },
       { t: 7.0, type: 'sniper', x: 840, y: -24, pol: 'cyan', hx: 840, hy: 88 },
       { t: 7.0, type: 'weaver', x: -24, y: 420, pol: 'magenta', hx: 210, hy: 420 },
@@ -542,6 +556,7 @@ export function createRun(sectorId, opts = {}) {
     },
     enemies: [], bullets: [],
     spawnQueue: def.spawns.map((s) => ({ ...s })),
+    surgeT: 0, // s left of the post-nova surge window (new spawns arrive fighting)
     score: 0, absorbs: 0, kills: 0, novas: 0, hits: 0,
     combo: 0, comboT: 0, maxCombo: 0,
     events: [], clearTime: null, clearBonus: 0,
@@ -553,13 +568,18 @@ export function drainEvents(run) { const evs = run.events; run.events = []; retu
 
 function spawnEnemy(run, def) {
   const t = ENEMY_TYPES[def.type];
+  // Post-nova surge (M2): enemies spawned inside the surge window arrive
+  // already at their hover point and firing — the arena rebuilds in ~2s
+  // after a nova instead of going quiet for ~8s while waves glide in and
+  // wind up their first shot. The spawn burst (game.js) marks the spot.
+  const surging = run.surgeT > 0;
   const e = {
-    id: nextEnemyId++, type: def.type, x: def.x, y: def.y,
+    id: nextEnemyId++, type: def.type, x: surging ? def.hx : def.x, y: surging ? def.hy : def.y,
     hx: def.hx, hy: def.hy, pol: def.pol,
     hp: t.hp, maxHp: t.hp, r: t.r,
-    fireT: 1.1 + run.rng() * 0.6, // first shot a beat after arriving
+    fireT: surging ? 0.5 + run.rng() * 0.4 : 1.1 + run.rng() * 0.6,
     age: 0, angle: run.rng() * Math.PI * 2,
-    entering: true, telegraphT: 0, swayPhase: run.rng() * Math.PI * 2,
+    entering: !surging, telegraphT: 0, swayPhase: run.rng() * Math.PI * 2,
   };
   run.enemies.push(e);
   pushEvent(run, { type: 'spawn', enemyType: def.type, pol: def.pol, x: e.x, y: e.y });
@@ -673,6 +693,12 @@ function doNova(run) {
     const shift = next.t - (run.time + 1.5);
     for (const s of run.spawnQueue) s.t -= shift;
   }
+  // Open the surge window: the next waves arrive already fighting (see
+  // spawnEnemy). Without it the pull-forward above only fixes WHEN the
+  // next wave arrives, not how fast it starts shooting — the arena still
+  // went quiet for ~8s while waves glided in and wound up (live
+  // playtest 2026-11-24 03:55, sector 9).
+  run.surgeT = SURGE_WINDOW;
 }
 
 // input: { mx, my, swap, nova } — mx/my in [-1, 1], swap/nova booleans.
@@ -721,6 +747,7 @@ export function stepRun(run, input = {}) {
   p.invuln = Math.max(0, p.invuln - DT);
   p.swapCd = Math.max(0, p.swapCd - DT);
   p.novaCd = Math.max(0, p.novaCd - DT);
+  run.surgeT = Math.max(0, run.surgeT - DT);
   run.comboT -= DT;
   if (run.comboT <= 0) run.combo = 0;
 

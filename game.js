@@ -1,4 +1,4 @@
-// Neon Surge v0.2.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.2.1 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
@@ -595,16 +595,17 @@ function drawEnemy(e, t) {
     ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#0b0b26';
     ctx.beginPath(); ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2); ctx.fill();
-    // Telegraph: pulsing aim line at the player.
+    // Telegraph: bright solid aim line at the player. M2: the old line was
+    // a thin dashed 0.05–0.65 alpha pulse for 0.65s — the live playtest
+    // never saw it in any frame. Now solid, thicker, brighter, and the
+    // telegraph lasts 0.85s (physics.js SNIPER_TELEGRAPH).
     if (e.telegraphT > 0 && run) {
       ctx.restore();
       ctx.save();
-      const a = 0.35 + 0.3 * Math.sin(t * 18);
+      const a = 0.55 + 0.35 * Math.sin(t * 18);
       ctx.globalAlpha = a;
-      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, 2 * s);
-      ctx.setLineDash([8 * s, 6 * s]);
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, 3.5 * s);
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(wx2sx(run.player.x), wy2sy(run.player.y)); ctx.stroke();
-      ctx.setLineDash([]);
       ctx.restore();
       ctx.save();
       ctx.translate(x, y); ctx.scale(appear, appear);
