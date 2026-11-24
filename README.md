@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.4.0 — M4 progression & depth)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v0.5.0 — M5 polish & robustness)
 
 ## How to play
 
@@ -54,6 +54,30 @@ score per sector is saved; clearing a sector unlocks the next.
 | 10 | Ambush Alley | Snipers and spinners trade ambushes down the alley; never sit in one lane. |
 | 11 | Storm Surge | Everything at once, faster than ever — three-enemy waves, no safe lane. |
 | 12 | The Heart | The final gauntlet: every enemy, every pattern, at full speed. |
+
+## Polish & robustness (M5)
+
+- **Wisp readability** — the wisp is now a velocity-pointed dart with a
+  white outline and a persistent thin white ring, so it never reads as a
+  weaver (a polarity-coloured diamond) in a busy field. The charge arc is
+  gold and thicker, at a larger radius, so the two rings never merge.
+- **Results persist the moment a run ends** — sector bests and Endless
+  bests are recorded when the run phase flips to clear/lost, not 0.9s
+  later at the end screen, so a reload during the transition can't lose
+  a result.
+- **Rank thresholds on the clear screen** — "S at 80 hull · A at 50
+  hull", so the player can see what the next rank costs.
+- **Real-second timing** — flashes decay in real seconds (a 0.30s flash
+  shows for 0.30s) and toasts hide after their real duration, on slow
+  devices too. The hit flash is 0.30s.
+- **Portrait letterbox** — on tall or very wide screens the bands
+  outside the arena are filled with twinkling stars instead of dead
+  space.
+- **Accessibility** — Settings adds larger text and higher contrast,
+  both persisted. Shake (0–100%), flashing and music toggles as before.
+- **FPS guard** — if the frame rate stays under 28fps for 2s, the
+  canvas DPR cap drops to 1 so the game stops stuttering instead of
+  dropping frames.
 
 ## Feel (M3)
 
@@ -101,15 +125,18 @@ deliberately not shown in the UI.
 
 ```sh
 node --check game.js && node --check physics.js
-npm run smoke        # 396 assertions: sectors, movement (screen-space),
+npm run smoke        # 400 assertions: sectors, movement (screen-space),
                      # swap, absorb, damage, nova, enemy fire, saves,
                      # feedback tiers, nova-ready crossing, music setting,
-                     # clear ranks, endless wave generation + run flow
+                     # clear ranks, endless wave generation + run flow,
+                     # M5 accessibility settings + migration
 npm run bot          # anti-slop gates on all 12 sectors + endless drift
 npm run render-check # headless Firefox: menu, demo, screen-space movement,
                      # swap, autopilot clear, pause, ?sector=3, ?endless=1,
                      # endless locked/unlocked + wave 1 -> wave 2,
-                     # zero console errors
+                     # M5 persist-on-flip, rank thresholds, real-second
+                     # flash/toast timing, text-size/contrast toggles,
+                     # FPS guard DPR drop, zero console errors
 npm run screenshots  # size sweep: 1280x720, 2560x1080, 1080x2340 (inspect by eye)
 ```
 

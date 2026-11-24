@@ -1,4 +1,4 @@
-// Neon Surge v0.4.0 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.5.0 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -18,7 +18,7 @@
 //     wave 1-2
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -1022,7 +1022,7 @@ export function defaultSave() {
   return {
     version: SAVE_VERSION, best: {}, unlocked: 1,
     endless: { bestWave: 0, bestScore: 0 },
-    settings: { shake: 1, flash: true, muted: false, music: true },
+    settings: { shake: 1, flash: true, muted: false, music: true, textSize: 'normal', contrast: false },
   };
 }
 export function serializeSave(save) { return JSON.stringify(save); }

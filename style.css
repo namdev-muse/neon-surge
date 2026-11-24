@@ -220,6 +220,25 @@ html, body {
 .complete-rank.rank-s { color: var(--gold); text-shadow: 0 0 22px rgba(251, 191, 36, 0.8); }
 .complete-rank.rank-a { color: var(--cyan); text-shadow: 0 0 22px rgba(34, 211, 238, 0.8); }
 .complete-rank.rank-b { color: var(--violet); text-shadow: 0 0 22px rgba(167, 139, 250, 0.8); }
+/* M5: rank thresholds on the clear screen — the player can see what the
+   next rank costs without guessing. */
+.complete-ranks { color: var(--dim); font-size: 13px; font-weight: 600; letter-spacing: 0.04em; margin: -4px 0 12px; }
+
+/* ---------- M5 accessibility: larger text, higher contrast ---------- */
+body.text-large { font-size: 112.5%; }
+body.text-large .panel { font-size: 17px; }
+body.text-large .panel-title { font-size: 34px; }
+body.text-large #hud { font-size: 17px; }
+body.text-large .btn { font-size: 17px; }
+body.text-large .hud-toast { font-size: 16px; }
+body.high-contrast {
+  --panel: rgba(8, 8, 32, 0.97);
+  --panel-border: rgba(167, 139, 250, 0.85);
+  --dim: #cbd5e1;
+  --text: #f8fafc;
+}
+body.high-contrast #hud { background: linear-gradient(180deg, rgba(8, 8, 32, 0.97), rgba(8, 8, 32, 0.9)); }
+body.high-contrast .hud-toast { background: rgba(8, 8, 32, 0.97); }
 .complete-stats {
   display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center;
   font-size: 16px; font-weight: 700; margin-bottom: 20px;
