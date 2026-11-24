@@ -1,4 +1,4 @@
-// Neon Surge v0.4.0 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.5.0 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -29,7 +29,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.4.0', VERSION === '0.4.0');
+check('physics version is 0.5.0', VERSION === '0.5.0');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -502,6 +502,18 @@ check('all feedback layers are named', FEEDBACK_LAYERS.every((l) => typeof l ===
 check('music defaults on', defaultSave().settings.music === true);
 check('an old save without a music setting gets music on', parseSave(JSON.stringify({ version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 0.5, flash: false, muted: true } })).settings.music === true);
 check('music setting survives a round trip', parseSave(serializeSave({ ...defaultSave(), settings: { ...defaultSave().settings, music: false } })).settings.music === false);
+// M5: accessibility settings default to normal text / normal contrast and
+// migrate old saves (parseSave merges settings over the defaults).
+check('text size defaults to normal', defaultSave().settings.textSize === 'normal');
+check('contrast defaults to normal (false)', defaultSave().settings.contrast === false);
+check('an old save without the M5 settings gets the defaults', (() => {
+  const s = parseSave(JSON.stringify({ version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 1, flash: true, muted: false, music: true } }));
+  return s.settings.textSize === 'normal' && s.settings.contrast === false;
+})());
+check('accessibility settings survive a round trip', (() => {
+  const s = parseSave(serializeSave({ ...defaultSave(), settings: { ...defaultSave().settings, textSize: 'large', contrast: true } }));
+  return s.settings.textSize === 'large' && s.settings.contrast === true;
+})());
 // --- M4: clear ranks ---
 {
   check('rank S at hull 80+', rankForHull(100) === 'S' && rankForHull(80) === 'S');

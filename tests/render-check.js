@@ -1,4 +1,4 @@
-// Neon Surge v0.4.0 — headless browser render check.
+// Neon Surge v0.5.0 — headless browser render check.
 // Serves the game dir over local HTTP, loads it in a headless browser, and
 // asserts the M1 core, by hook and by eye:
 //   - the menu renders over a LIVE demo (the attract-mode bot actually
@@ -21,6 +21,13 @@
 //     clearing sector 1 unlocks endless, which starts from the menu,
 //     banners WAVE 1, and advances to wave 2; ?endless=1 jumps in
 //     directly on a fresh save
+//   - M5: the sector best is already in localStorage the moment the run
+//     ends (persist-on-phase-flip, before the complete screen shows);
+//     the clear screen prints the rank thresholds; flash decays in real
+//     seconds (0.30s flash still live at 200ms, gone by 500ms); a 2s
+//     toast hides after ~2s real time; text-size / contrast toggles
+//     apply body classes and persist; the FPS guard drops the DPR cap
+//     to 1 and shrinks the canvas backing store on a 2x-DPI page
 //   - feel state returns to rest (trauma 0, timeScale 1) when idle
 //   - zero console errors and zero page errors
 //
@@ -231,6 +238,16 @@ try {
   check('Enter resumes the run', true);
 
   // --- autopilot clears sector 1 ------------------------------------------
+  // M5 persist-on-phase-flip: the best must already be in localStorage
+  // the moment the run ends (state.done, phase still 'playing' during
+  // the 0.9s transition) — NOT only once the complete screen shows.
+  await page.waitForFunction(() => window.__surge.state.done === true, null, { timeout: 180000 });
+  check('M5: sector best is persisted the moment the run ends (before the complete screen shows)', await page.evaluate(() => {
+    const raw = localStorage.getItem('neon-surge-save-v1');
+    if (!raw) return false;
+    const s = JSON.parse(raw);
+    return window.__surge.state.phase === 'playing' && s.best && s.best[1] && s.best[1].score > 0;
+  }), await page.evaluate(() => JSON.stringify(window.__surge.state)));
   // 180s: Firefox clears it in ~40s wall; the headroom covers a slow
   // cold start. (Under the headless shell this used to time out at 240s
   // because rAF throttling stalls the sim — see the header note.)
@@ -249,6 +266,12 @@ try {
     const el = document.getElementById('complete-rank');
     return el && /^RANK [SAB]$/.test(el.textContent.trim());
   }), await page.evaluate(() => document.getElementById('complete-rank').textContent));
+  // M5: the rank thresholds are printed on the clear screen so the
+  // player can see what the next rank costs (S at 80 hull, A at 50).
+  check('complete screen shows the rank thresholds (S at 80 hull, A at 50 hull)', await page.evaluate(() => {
+    const el = document.querySelector('.complete-ranks');
+    return el && /S at 80/.test(el.textContent) && /A at 50/.test(el.textContent);
+  }), await page.evaluate(() => document.querySelector('.complete-ranks')?.textContent));
   await page.click('#btn-complete-menu');
   await page.waitForFunction(() => window.__surge.state.phase === 'menu', null, { timeout: 5000 });
   // M4: clearing sector 1 unlocked Endless Drift — the button is no
@@ -335,7 +358,7 @@ try {
 
   // --- M3: hit bundle + accessibility toggles (fresh run, no autopilot) --
   // An idle wisp in sector 1 takes a hit within seconds; the hit bundle
-  // (flash 0.22s, trauma 0.45) must still be live in the frame the hull
+  // (flash 0.30s, trauma 0.45) must still be live in the frame the hull
   // first drops, so the read follows the poll immediately.
   const context3 = await browser.newContext({ viewport: { width: 1280, height: 720 }, timezoneId: 'Asia/Bangkok' });
   const page3 = await context3.newPage();
@@ -361,7 +384,62 @@ try {
   check('music toggle stops the loop', await page3.evaluate(() => window.__surge.audio().musicPlaying === false));
   await page3.evaluate(() => window.__surge.setMusic(true));
   check('music toggle restarts the loop', await page3.evaluate(() => window.__surge.audio().musicPlaying === true));
+  // --- M5: real-second flash + toast timing, accessibility toggles -------
+  // Keep the run alive with the autopilot while probing — an idle wisp
+  // would die mid-probe and the toast timer only ticks while playing.
+  await page3.evaluate(() => window.__surge.autopilot(true));
+  // Flash probe: pause FIRST (a live autopilot nova would overwrite the
+  // probe flash — the first run of this check read the nova's 0.5s
+  // flash, not the 0.30s debug flash) and let any in-flight flash decay.
+  await page3.evaluate(() => window.__surge.pause());
+  await page3.waitForTimeout(1500);
+  await page3.evaluate(() => window.__surge.debugFlash());
+  const flash0 = await page3.evaluate(() => window.__surge.feel());
+  check('M5: flash starts at its set duration (0.30s real)', flash0.flashT > 0.2 && flash0.flashT <= 0.3 && flash0.flashMax === 0.3, JSON.stringify(flash0));
+  await page3.waitForTimeout(200);
+  const flash200 = await page3.evaluate(() => window.__surge.feel());
+  check('M5: flash still live 200ms after a 0.30s flash (real-second decay)', flash200.flashT > 0.03 && flash200.flashT < 0.2, JSON.stringify(flash200));
+  await page3.waitForTimeout(300);
+  const flash500 = await page3.evaluate(() => window.__surge.feel());
+  check('M5: flash is gone 500ms after a 0.30s flash', flash500.flashT === 0, JSON.stringify(flash500));
+  await page3.evaluate(() => window.__surge.resume());
+  const toastT0 = Date.now();
+  await page3.evaluate(() => window.__surge.debugToast('M5 probe toast', 2000));
+  check('M5: debug toast shows', await page3.evaluate(() => !document.getElementById('hud-toast').classList.contains('hidden')));
+  await page3.waitForFunction(() => document.getElementById('hud-toast').classList.contains('hidden'), null, { timeout: 8000 });
+  const toastElapsed = Date.now() - toastT0;
+  check('M5: toast hides after its real duration (~2s, not frame-counted)', toastElapsed >= 1800 && toastElapsed <= 3200, `${toastElapsed}ms`);
+  await page3.evaluate(() => window.__surge.setTextSize('large'));
+  check('M5: large text applies the text-large body class and persists', await page3.evaluate(() => document.body.classList.contains('text-large') && window.__surge.save.settings.textSize === 'large'));
+  await page3.evaluate(() => window.__surge.setContrast(true));
+  check('M5: high contrast applies the high-contrast body class and persists', await page3.evaluate(() => document.body.classList.contains('high-contrast') && window.__surge.save.settings.contrast === true));
+  await page3.evaluate(() => { window.__surge.setTextSize('normal'); window.__surge.setContrast(false); });
+  check('M5: accessibility toggles switch back off', await page3.evaluate(() => !document.body.classList.contains('text-large') && !document.body.classList.contains('high-contrast')));
   await context3.close();
+
+  // --- M5: FPS guard drops the DPR cap on a slow device -------------------
+  // Firefox headless reports devicePixelRatio 1 even with a 2x context,
+  // so emulate a 2x display by shadowing devicePixelRatio and dispatching
+  // a resize — the canvas backing store must go to 2x. Triggering the
+  // guard (the same path the frame loop takes after 2s under 28fps)
+  // must drop the cap to 1 and shrink the backing store back to 1x.
+  const contextG = await browser.newContext({ viewport: { width: 1280, height: 720 }, timezoneId: 'Asia/Bangkok' });
+  const pageG = await contextG.newPage();
+  pageG.on('console', (msg) => { if (msg.type() === 'error') errors.push(`fps-guard console: ${msg.text()}`); });
+  pageG.on('pageerror', (err) => errors.push(`fps-guard pageerror: ${String(err)}`));
+  await pageG.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await pageG.waitForFunction(() => window.__surge, null, { timeout: 30000 });
+  const backingBefore = await pageG.evaluate(() => {
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    window.dispatchEvent(new Event('resize'));
+    return document.getElementById('game').width;
+  });
+  check('M5: high-DPI backing store starts at 2x', backingBefore === 2560, `canvas width=${backingBefore}`);
+  await pageG.evaluate(() => window.__surge.triggerFpsGuard());
+  check('M5: FPS guard drops the DPR cap to 1', await pageG.evaluate(() => window.__surge.dprCap === 1));
+  const backingAfter = await pageG.evaluate(() => document.getElementById('game').width);
+  check('M5: canvas backing store shrinks to 1x after the guard', backingAfter === 1280, `canvas width=${backingAfter}`);
+  await contextG.close();
 
   if (errors.length > 0) {
     console.error('render-check: console/page errors:');

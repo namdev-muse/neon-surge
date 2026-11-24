@@ -1,4 +1,4 @@
-// Neon Surge v0.4.0 — bot harness: the anti-slop gate.
+// Neon Surge v0.5.0 — bot harness: the anti-slop gate.
 //   - Decision bot: real polarity-swap + nova decisions through the public
 //     stepRun input hooks. It MUST clear all 12 sectors.
 //   - No-swap bot: same movement and nova play, but never swaps polarity.
