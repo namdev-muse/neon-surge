@@ -1,4 +1,4 @@
-// Neon Surge v0.3.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.4.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
@@ -6,9 +6,11 @@
 import {
   VERSION, ARENA_W, ARENA_H, DT, PLAYER_R, PLAYER_SPEED,
   HULL_MAX, CHARGE_MAX, NOVA_COST, NOVA_DAMAGE, HIT_DAMAGE, ABSORB_SCORE,
-  SECTORS, sectorById, createRun, stepRun, drainEvents,
+  SECTORS, sectorById, createRun, createEndlessRun, rankForHull,
+  stepRun, drainEvents,
   createDecisionBot, defaultSave, serializeSave, parseSave,
-  recordBest, isSectorUnlocked, bestFor, SAVE_KEY,
+  recordBest, recordEndlessBest, isSectorUnlocked, isEndlessUnlocked,
+  bestFor, bestEndless, SAVE_KEY,
   FEEDBACK, STREAK_MILESTONES, clamp, worldToScreen,
 } from './physics.js';
 
@@ -100,6 +102,9 @@ const sfx = {
     [0, 4, 7].forEach((s, i) => setTimeout(() => tone(base * [1, 1.25, 1.5][i], 0.1, 'triangle', 0.09), i * 55));
   },
   warn() { tone(196, 0.14, 'square', 0.08, 147); setTimeout(() => tone(196, 0.14, 'square', 0.08, 147), 180); },
+  // M4: an Endless wave starting gets a rising two-note horn — the wave
+  // banner is seen, the horn is heard, the next storm is announced.
+  wave() { tone(392, 0.14, 'triangle', 0.1, 523); setTimeout(() => tone(523, 0.18, 'triangle', 0.1, 784), 130); },
 };
 
 // ---------------------------------------------------------------- music
@@ -179,6 +184,7 @@ let drag = { active: false, id: null, x: 0, y: 0, startX: 0, startY: 0, startT: 
 let trauma = 0, hitStopT = 0, slowMoT = 0, timeScale = 1, flashT = 0, flashColor = COLORS.gold;
 let swapFlashT = 0, zoomT = 0, fpsEma = 60, lastTime = performance.now(), acc = 0;
 let hullLowWarned = false, lastDeniedT = 0;
+let waveBanner = { text: '', t: 0 }; // M4: big centre banner ("WAVE 3", "WAVE 2 CLEAR") on Endless wave starts/clears
 
 // Particles (pooled), shockwaves, floating pops.
 const particles = [];
@@ -260,6 +266,25 @@ function refreshMenuBest() {
   $('menu-best').textContent = cleared === 0
     ? 'No sectors cleared yet — twelve sectors of bullet storms await.'
     : `${cleared}/${SECTORS.length} sectors cleared · best score ${bestScore.toLocaleString()}.`;
+  refreshEndlessButton();
+}
+// M4: the Endless Drift button reads its lock state from the save. Locked:
+// dimmed with a lock and the reason under it. Unlocked: the best Endless
+// result under it. The button stays clickable when locked — the click
+// answers with a denied tick and pulses the note, never a dead button.
+function refreshEndlessButton() {
+  const btn = $('btn-endless'), note = $('endless-note');
+  const unlocked = isEndlessUnlocked(save);
+  btn.classList.toggle('locked', !unlocked);
+  btn.textContent = unlocked ? '∞ Endless Drift' : '🔒 Endless Drift';
+  if (unlocked) {
+    const eb = bestEndless(save);
+    note.textContent = eb.bestWave > 0
+      ? `Best: Wave ${eb.bestWave} · ${eb.bestScore.toLocaleString()} points`
+      : 'Endless Drift unlocked — no runs yet. Waves keep coming.';
+  } else {
+    note.textContent = 'Clear Sector 1 to unlock Endless Drift';
+  }
 }
 function refreshSectorSelect() {
   const grid = $('sector-grid');
@@ -273,7 +298,7 @@ function refreshSectorSelect() {
     card.disabled = !unlocked;
     card.style.setProperty('--accent', s.accent);
     card.innerHTML = `<span class="level-num">SECTOR ${s.id}</span>`
-      + `<span class="level-name">${s.name}</span>`
+      + `<span class="level-name">${s.name}${best && best.rank ? ` <span class="level-rank rank-${best.rank.toLowerCase()}">${best.rank}</span>` : ''}</span>`
       + `<span class="level-meta">${s.hint}</span>`
       + `<span class="level-meta">${best ? `Best ${best.score.toLocaleString()} · ${best.time.toFixed(1)}s` : 'Not cleared yet'}</span>`;
     card.addEventListener('click', () => { ensureAudio(); sfx.uiTick(); selectedSector = s.id; startSector(s.id); });
@@ -284,6 +309,7 @@ function refreshSectorSelect() {
 function goMenu() {
   phase = 'menu';
   run = null; autopilot = null; transitionT = null;
+  waveBanner = { text: '', t: 0 };
   clearToast();
   $('hud').classList.add('hidden');
   $('touch').classList.add('hidden');
@@ -318,6 +344,27 @@ function startSector(id) {
   toast(run.def.hint, 3600);
   lastTime = performance.now();
 }
+function startEndless() {
+  ensureAudio();
+  startMusic();
+  run = createEndlessRun();
+  phase = 'playing';
+  transitionT = null;
+  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; zoomT = 0;
+  waveBanner = { text: '', t: 0 };
+  hullLowWarned = false;
+  for (const p of particles) p.alive = false;
+  shockwaves.length = 0; pops.length = 0;
+  screenStack = [];
+  for (const el of document.querySelectorAll('.overlay')) el.classList.add('hidden');
+  $('hud').classList.remove('hidden');
+  if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) $('touch').classList.remove('hidden');
+  $('hud-sector').textContent = 'Endless Drift · Wave 1';
+  const eb = bestEndless(save);
+  $('hud-best').textContent = eb.bestWave > 0 ? `Best Wave ${eb.bestWave}` : 'Best Wave —';
+  toast('Endless Drift — waves keep coming. Survive as long as you can.', 3600);
+  lastTime = performance.now();
+}
 function pauseGame() {
   if (phase !== 'playing') return;
   phase = 'pause';
@@ -333,7 +380,8 @@ function resumeGame() {
 }
 function restartSector() {
   if (!run) return;
-  startSector(run.sectorId);
+  if (run.mode === 'endless') startEndless();
+  else startSector(run.sectorId);
 }
 function quitToMenu() {
   // Talon lesson: clear transient UI state on run end and quit-to-menu.
@@ -347,6 +395,11 @@ function showEndScreen() {
     persistSave();
     phase = 'complete';
     $('complete-title').textContent = 'Sector Clear!';
+    // M4: the clear rank is the headline — S/A/B from hull left.
+    const rank = rankForHull(run.player.hull);
+    const rankEl = $('complete-rank');
+    rankEl.textContent = `RANK ${rank}`;
+    rankEl.className = `complete-rank rank-${rank.toLowerCase()}`;
     $('complete-best').textContent = isBest ? `New best score: ${run.score.toLocaleString()}!` : `Score ${run.score.toLocaleString()} (best ${bestFor(save, run.sectorId).score.toLocaleString()})`;
     $('complete-time').textContent = `Time ${run.time.toFixed(1)}s`;
     $('complete-score').textContent = `Score ${run.score.toLocaleString()}`;
@@ -358,7 +411,24 @@ function showEndScreen() {
     showScreen('complete');
   } else if (run.phase === 'lost') {
     phase = 'gameover';
-    $('gameover-sub').textContent = `The storm got you in ${run.def.name}. Swap sooner, absorb more, nova when the sky fills.`;
+    if (run.mode === 'endless') {
+      // M4: an Endless run ends at hull 0 — the result is the wave
+      // reached and the score, saved separately from the sector bests.
+      const isBest = recordEndlessBest(save, run.wave, run.score);
+      persistSave();
+      $('gameover-title').textContent = 'The Drift Ends';
+      $('gameover-sub').textContent = isBest
+        ? `New best — Wave ${run.wave} · ${run.score.toLocaleString()} points!`
+        : `Wave ${run.wave} · Score ${run.score.toLocaleString()} (best Wave ${save.endless.bestWave})`;
+      $('gameover-wave').textContent = `Wave ${run.wave}`;
+      $('gameover-wave').classList.remove('hidden');
+      $('btn-retry').textContent = '↻ Drift Again';
+    } else {
+      $('gameover-title').textContent = 'Wisp Down';
+      $('gameover-sub').textContent = `The storm got you in ${run.def.name}. Swap sooner, absorb more, nova when the sky fills.`;
+      $('gameover-wave').classList.add('hidden');
+      $('btn-retry').textContent = '↻ Retry Sector';
+    }
     $('gameover-score').textContent = `Score ${run.score.toLocaleString()}`;
     $('gameover-time').textContent = `Time ${run.time.toFixed(1)}s`;
     $('gameover-absorbs').textContent = `Absorbed ${run.absorbs}`;
@@ -378,6 +448,17 @@ function setText(id, value) {
 function updateHUD() {
   if (!run || (phase !== 'playing' && phase !== 'pause')) return;
   const p = run.player;
+  // M4: in Endless Drift the HUD carries the wave, not a sector name,
+  // and the best wave, not a sector best score.
+  if (run.mode === 'endless') {
+    setText('hud-sector', `Endless Drift · Wave ${run.wave}`);
+    const eb = bestEndless(save);
+    setText('hud-best', eb.bestWave > 0 ? `Best Wave ${eb.bestWave}` : 'Best Wave —');
+  } else {
+    setText('hud-sector', `${run.def.id} · ${run.def.name}`);
+    const best = bestFor(save, run.sectorId);
+    setText('hud-best', best ? `Best ${best.score.toLocaleString()}` : 'Best —');
+  }
   setText('hud-score', `Score ${run.score.toLocaleString()}`);
   setText('hud-time', `${run.time.toFixed(1)}s`);
   const chargeEl = $('hud-charge-fill');
@@ -621,6 +702,22 @@ function handleEvents(runObj) {
         fireTier(ev);
         sfx.ring();
         break;
+      case 'wave-start':
+        // M4: a new Endless wave is announced, not just spawned — the
+        // banner names the wave, the horn marks the moment.
+        fireTier(ev);
+        waveBanner = { text: `WAVE ${ev.wave}`, t: 2.2 };
+        sfx.wave();
+        break;
+      case 'wave-clear': {
+        fireTier(ev);
+        waveBanner = { text: `WAVE ${ev.wave} CLEAR`, t: 1.8 };
+        burst(runObj.player.x, runObj.player.y, COLORS.gold, 24, 300, 3.5, 0.8);
+        addPop(runObj.player.x, runObj.player.y - 30, `+${ev.bonus}`, COLORS.gold);
+        toast(`Wave ${ev.wave} clear — +${ev.bonus} bonus${ev.hullBonus > 0 ? ` · +${ev.hullBonus} hull` : ''}`, 2600);
+        sfx.clear();
+        break;
+      }
       default:
         break;
     }
@@ -876,6 +973,23 @@ function render(now) {
     ctx.fillText(p.text, wx2sx(p.x), wy2sy(p.y - (1 - p.life / p.maxLife) * 30));
   }
   ctx.restore();
+  // M4: Endless wave banner — big gold centre text while a wave starts
+  // or clears. Fades in the last 0.4s so it never pops off mid-word.
+  if (waveBanner.t > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, waveBanner.t / 0.4);
+    ctx.font = `900 ${Math.round(46 * view.scale)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    // Cheap glow: four translucent echoes behind the solid text — no
+    // shadowBlur, which is brutally slow in software rendering.
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.35)';
+    for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
+      ctx.fillText(waveBanner.text, viewW / 2 + dx, viewH * 0.38 + dy);
+    }
+    ctx.fillStyle = COLORS.gold;
+    ctx.fillText(waveBanner.text, viewW / 2, viewH * 0.38);
+    ctx.restore();
+  }
   // Flash overlay (respects the flashing toggle).
   if (flashT > 0 && save.settings.flash !== false) {
     ctx.globalAlpha = Math.min(0.45, flashT * 0.9);
@@ -928,6 +1042,7 @@ function frame(now) {
   trauma = Math.max(0, trauma - realDt * 1.6);
   flashT = Math.max(0, flashT - realDt * 2.2);
   zoomT = Math.max(0, zoomT - realDt * 1.2);
+  waveBanner.t = Math.max(0, waveBanner.t - realDt);
 
   if (phase === 'playing' && run) {
     acc += simDt;
@@ -970,6 +1085,19 @@ function frame(now) {
 // ---------------------------------------------------------------- wiring + hooks
 function bindUI() {
   $('btn-play').addEventListener('click', () => { ensureAudio(); sfx.uiTick(); startSector(selectedSector); });
+  // M4: Endless Drift. Locked: the click answers (denied tick + the lock
+  // note pulses) instead of doing nothing — a locked button is not a
+  // dead button. Unlocked: it starts the mode.
+  $('btn-endless').addEventListener('click', () => {
+    ensureAudio();
+    if (!isEndlessUnlocked(save)) {
+      sfx.denied();
+      const note = $('endless-note');
+      note.classList.remove('pulse'); void note.offsetWidth; note.classList.add('pulse');
+      return;
+    }
+    sfx.uiTick(); startEndless();
+  });
   $('btn-sectors').addEventListener('click', () => { refreshSectorSelect(); pushScreen('sectors'); });
   $('btn-howto').addEventListener('click', () => pushScreen('howto'));
   $('btn-settings').addEventListener('click', () => pushScreen('settings'));
@@ -1002,7 +1130,7 @@ function bindUI() {
   }
   const resetBtn = $('btn-reset-best');
   if (resetBtn) resetBtn.addEventListener('click', () => {
-    save.best = {}; save.unlocked = 1; persistSave();
+    save.best = {}; save.unlocked = 1; save.endless = { bestWave: 0, bestScore: 0 }; persistSave();
     refreshMenuBest(); refreshSectorSelect();
     toast('Best scores cleared', 2000);
   });
@@ -1027,9 +1155,10 @@ window.__surge = {
   get version() { return VERSION; },
   get state() {
     return {
-      phase, sectorId: run ? run.sectorId : selectedSector,
+      phase, mode: run ? run.mode : null, sectorId: run ? run.sectorId : selectedSector,
       score: run ? run.score : null, charge: run ? run.player.charge : null,
       hull: run ? run.player.hull : null, time: run ? run.time : null,
+      wave: run && run.mode === 'endless' ? run.wave : null,
       done: run ? run.phase !== 'playing' : null, won: run ? run.phase === 'clear' : null,
       muted, fps: Math.round(fpsEma),
     };
@@ -1039,7 +1168,9 @@ window.__surge = {
     if (!r) return null;
     const sp = worldToScreen(r.player.x, r.player.y, viewW, viewH);
     return {
-      sectorId: r.sectorId, sectorName: r.def.name,
+      sectorId: r.sectorId, sectorName: r.def.name, mode: r.mode,
+      wave: r.mode === 'endless' ? r.wave : null,
+      wavesCleared: r.mode === 'endless' ? r.wavesCleared : null,
       player: { x: sp.x, y: sp.y },
       playerWorld: { x: r.player.x, y: r.player.y, pol: r.player.pol, hull: r.player.hull, charge: r.player.charge },
       score: r.score, absorbs: r.absorbs, kills: r.kills, novas: r.novas,
@@ -1054,6 +1185,8 @@ window.__surge = {
     }));
   },
   startSector(id) { startSector(id); },
+  startEndless() { startEndless(); },
+  endlessUnlocked() { return isEndlessUnlocked(save); },
   autopilot(on) {
     if (on) { autopilot = createDecisionBot(); }
     else autopilot = null;
@@ -1090,6 +1223,7 @@ window.__surge = {
       shockwaves: shockwaves.length,
       pops: pops.length,
       particlesAlive: particles.reduce((n, p) => n + (p.alive ? 1 : 0), 0),
+      waveBanner: { text: waveBanner.text, t: waveBanner.t },
     };
   },
   get save() { return JSON.parse(JSON.stringify(save)); },
@@ -1104,11 +1238,13 @@ refreshMenuBest();
 selectedSector = save.unlocked || 1;
 goMenu();
 // Playtest path (Apex lesson): ?sector=N jumps straight into that sector,
-// bypassing the unlock — kept out of the player-facing UI.
+// ?endless=1 jumps straight into Endless Drift — both bypass the unlock,
+// kept out of the player-facing UI.
 {
   const params = new URLSearchParams(window.location.search);
   const s = Number(params.get('sector'));
   if (Number.isInteger(s) && s >= 1 && s <= SECTORS.length) startSector(s);
+  else if (params.get('endless') === '1') startEndless();
 }
 lastTime = performance.now();
 requestAnimationFrame(frame);

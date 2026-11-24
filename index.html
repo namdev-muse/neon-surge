@@ -47,6 +47,8 @@
     <p id="menu-best" class="menu-best">No sorties cleared yet — twelve sectors of bullet storms await.</p>
     <div class="menu-actions">
       <button type="button" id="btn-play" class="btn primary">▶&nbsp; Play</button>
+      <button type="button" id="btn-endless" class="btn">∞ Endless Drift</button>
+      <span id="endless-note" class="menu-note">Clear Sector 1 to unlock Endless Drift</span>
       <button type="button" id="btn-sectors" class="btn">Sectors</button>
       <button type="button" id="btn-howto" class="btn">How to Play</button>
       <button type="button" id="btn-settings" class="btn">Settings</button>
@@ -80,6 +82,8 @@
       <li>There is no gun — the nova is your only weapon. Absorb to earn it, spend it when the sky is full.</li>
       <li><span class="key">P</span> pause · <span class="key">M</span> mute · <span class="key">R</span> restart sector.</li>
       <li>Clear a sector to unlock the next. Your best score per sector is saved.</li>
+      <li>Clear rank: finish a sector with 80+ hull for <strong>S</strong>, 50+ for <strong>A</strong>, below that <strong>B</strong>. Replay a sector to improve its rank.</li>
+      <li>Endless Drift unlocks after clearing Sector 1: waves of bullet patterns keep coming — faster and denser every wave — until your hull gives out. Your best wave is saved.</li>
       <li>Watch the snipers: they glow and draw an aim line before firing a fast shot. Spinner rings mix both colours — no single polarity is safe inside one.</li>
     </ul>
     <button type="button" id="btn-howto-back" class="btn">← Back</button>
@@ -129,6 +133,7 @@
 <section id="complete" class="overlay hidden" aria-label="Sector complete">
   <div class="panel">
     <h2 id="complete-title" class="panel-title">Sector Clear!</h2>
+    <p id="complete-rank" class="complete-rank"></p>
     <p id="complete-best" class="complete-best"></p>
     <div class="complete-stats">
       <span id="complete-time">Time 0.0s</span>
@@ -147,13 +152,14 @@
 <!-- Sector lost -->
 <section id="gameover" class="overlay hidden" aria-label="Sector lost">
   <div class="panel">
-    <h2 class="panel-title">Wisp Down</h2>
+    <h2 id="gameover-title" class="panel-title">Wisp Down</h2>
     <p id="gameover-sub" class="complete-best"></p>
     <div class="complete-stats">
       <span id="gameover-score">Score 0</span>
       <span id="gameover-time">Time 0.0s</span>
       <span id="gameover-absorbs">Absorbed 0</span>
       <span id="gameover-kills">Kills 0</span>
+      <span id="gameover-wave" class="hidden">Wave 1</span>
     </div>
     <div class="menu-actions">
       <button type="button" id="btn-retry" class="btn primary">↻ Retry Sector</button>

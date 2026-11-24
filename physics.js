@@ -1,4 +1,4 @@
-// Neon Surge v0.3.0 — pure simulation (no DOM, no Canvas).
+// Neon Surge v0.4.0 — pure simulation (no DOM, no Canvas).
 // 2D neon polarity bullet-hell arena: pilot a wisp; enemy bullets come in
 // two polarities (cyan / magenta). Match your polarity to ABSORB bullets and
 // build charge; opposite-polarity bullets damage your hull. Charge powers a
@@ -6,13 +6,19 @@
 // skill — there is no auto-swap, no assist, no gun. The only way to kill an
 // enemy is a well-timed nova, and the only way to earn a nova is to absorb.
 //
+// M4: Endless Drift — seeded waves built from the 12 sectors' patterns,
+// scaling in count and bullet speed; clear ranks (S/A/B from hull left);
+// best Endless result saved separately.
+//
 // Anti-slop gates (tests/bot.js):
 //   - decision bot (real swap + nova decisions) clears all 12 sectors
 //   - no-swap bot (same movement/nova, never swaps) loses all 12
 //   - sit-still bot loses all 12
+//   - endless: decision bot reaches wave 4+; no-swap / sit-still die in
+//     wave 1-2
 // A sector the no-swap bot clears is not done — tighten the bullet mix.
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 export const ARENA_W = 960;
 export const ARENA_H = 600;
 export const DT = 1 / 60;
@@ -85,6 +91,10 @@ export const FEEDBACK = {
   ring: { trauma: 0, hitStop: 0, layers: ['sound'] },
   spawn: { trauma: 0, hitStop: 0, layers: ['particles'] },
   telegraph: { trauma: 0, hitStop: 0, layers: ['sound'] },
+  // M4 (Endless Drift): a wave starting is a small moment (banner +
+  // two-note horn); clearing one is a medium moment (bonus + arpeggio).
+  'wave-start': { trauma: 0.10, hitStop: 0, layers: ['sound', 'pop'] },
+  'wave-clear': { trauma: 0.25, hitStop: 0, layers: ['sound', 'particles', 'pop'] },
 };
 // Absorb streaks that earn a milestone pop + chime (game.js): the combo
 // itself is the score, the milestone is the celebration.
@@ -561,6 +571,77 @@ export const SECTORS = [
 
 export function sectorById(id) { return SECTORS.find((s) => s.id === id) || null; }
 
+// --- clear ranks + endless drift (M4) ------------------------------------
+// Clear rank: the reason to replay a sector for a better result. S means
+// the sector was cleared nearly untouched; A means a good clear with real
+// damage taken; B means it was scraped through on low hull.
+export function rankForHull(hull) {
+  if (hull >= 80) return 'S';
+  if (hull >= 50) return 'A';
+  return 'B';
+}
+
+// Endless Drift: waves built from the 12 sectors' hand-crafted patterns,
+// seeded so the same (wave, seed) always deals the same wave. Scaling:
+// enemy count rises by 1 per wave (capped at 40) and bullet speed rises
+// 9 px/s per wave (capped at 430, so the storm stays readable). The
+// polarity mix flips wave to wave — odd waves lean magenta, even waves
+// lean cyan — and neither polarity ever exceeds 65% of a wave, so no
+// single polarity is ever safe to camp on.
+export const ENDLESS_BASE_SEED = 20261124;
+export const ENDLESS_WAVE_BREATHER = 3.0; // s between waves
+export const ENDLESS_WAVE_BONUS = 250;    // score per wave cleared (x wave number)
+export const ENDLESS_WAVE_HULL_BONUS = 0; // hull restored per wave cleared — 0 unless bot data says a good run ends absurdly early (M4 rule: only add +8 if the decision bot dies before wave 4)
+export const ENDLESS_BULLET_SPEED_BASE = 200;
+export const ENDLESS_BULLET_SPEED_STEP = 9;
+export const ENDLESS_BULLET_SPEED_CAP = 430;
+export const ENDLESS_WAVE_COUNT_BASE = 16;
+export const ENDLESS_WAVE_COUNT_CAP = 40;
+
+export function endlessWaveSpec(wave, seed = ENDLESS_BASE_SEED) {
+  const rng = mulberry32((seed + wave * 7919) >>> 0);
+  const src = SECTORS[(wave - 1) % SECTORS.length];
+  const target = Math.min(ENDLESS_WAVE_COUNT_BASE + wave, ENDLESS_WAVE_COUNT_CAP);
+  // Start from the source sector's hand-crafted spawn list (telegraphs
+  // stripped — they name sector-1 tutorial text, not an endless wave).
+  let spawns = src.spawns.map((s) => {
+    const { telegraph, ...rest } = s;
+    return { ...rest };
+  });
+  if (spawns.length > target) spawns = spawns.slice(0, target);
+  while (spawns.length < target) {
+    const { telegraph, ...baseRest } = src.spawns[Math.floor(rng() * src.spawns.length)];
+    const last = spawns[spawns.length - 1];
+    spawns.push({
+      ...baseRest,
+      t: last.t + 0.5 + rng() * 2.0,
+      hx: clamp(baseRest.hx + (rng() - 0.5) * 120, 60, ARENA_W - 60),
+      hy: clamp(baseRest.hy + (rng() - 0.5) * 80, 50, ARENA_H - 50),
+    });
+  }
+  spawns.sort((a, b) => a.t - b.t);
+  // Polarity mix: the wave leans one way by parity, but the minority
+  // always holds at least 35% — there is always food for the other
+  // polarity, and camping one polarity never clears a wave.
+  const majority = wave % 2 === 1 ? 'magenta' : 'cyan';
+  const minority = majority === 'magenta' ? 'cyan' : 'magenta';
+  const countPol = (pol) => spawns.reduce((n, s) => n + (s.pol === pol ? 1 : 0), 0);
+  let guard = 0;
+  while (countPol(majority) < Math.ceil(spawns.length / 2) && guard++ < 200) {
+    const i = spawns.findIndex((s) => s.pol === minority);
+    if (i < 0) break;
+    spawns[i] = { ...spawns[i], pol: majority };
+  }
+  guard = 0;
+  while (countPol(majority) > Math.floor(spawns.length * 0.65) && guard++ < 200) {
+    const idxs = spawns.map((s, i) => (s.pol === majority ? i : -1)).filter((i) => i >= 0);
+    const i = idxs[Math.floor(rng() * idxs.length)];
+    spawns[i] = { ...spawns[i], pol: minority };
+  }
+  const bulletSpeed = Math.min(ENDLESS_BULLET_SPEED_BASE + (wave - 1) * ENDLESS_BULLET_SPEED_STEP, ENDLESS_BULLET_SPEED_CAP);
+  return { wave, bulletSpeed, spawns, accent: src.accent, sourceSector: src.id };
+}
+
 // --- run state -----------------------------------------------------------
 let nextEnemyId = 1;
 
@@ -569,7 +650,7 @@ export function createRun(sectorId, opts = {}) {
   if (!def) throw new Error(`no sector ${sectorId}`);
   const rng = mulberry32(opts.seed ?? sectorId * 7919 + 13);
   return {
-    sectorId, def, rng,
+    mode: 'sector', sectorId, def, rng,
     time: 0, phase: 'playing', // 'playing' | 'clear' | 'lost'
     player: {
       x: ARENA_W / 2, y: ARENA_H - 90, vx: 0, vy: 0,
@@ -587,6 +668,44 @@ export function createRun(sectorId, opts = {}) {
 
 function pushEvent(run, ev) { run.events.push(ev); }
 export function drainEvents(run) { const evs = run.events; run.events = []; return evs; }
+
+// An Endless Drift run: no fixed sector, waves generated on the fly from
+// endlessWaveSpec. The run opens with a short breather (the wave banner
+// reads "WAVE 1" before the first spawn) and ends only at hull 0.
+export function createEndlessRun(opts = {}) {
+  const seed = opts.seed ?? ENDLESS_BASE_SEED;
+  return {
+    mode: 'endless', sectorId: 0, endlessSeed: seed,
+    def: { id: 0, name: 'Endless Drift', accent: '#fbbf24', par: 0, bulletSpeed: ENDLESS_BULLET_SPEED_BASE },
+    rng: mulberry32(seed),
+    time: 0, phase: 'playing', // 'playing' | 'lost' (endless never 'clear')
+    player: {
+      x: ARENA_W / 2, y: ARENA_H - 90, vx: 0, vy: 0,
+      pol: 'cyan', hull: HULL_MAX, charge: 0,
+      invuln: 0, swapCd: 0, novaCd: 0,
+    },
+    enemies: [], bullets: [],
+    spawnQueue: [],
+    surgeT: 0,
+    score: 0, absorbs: 0, kills: 0, novas: 0, hits: 0,
+    combo: 0, comboT: 0, maxCombo: 0,
+    events: [], clearTime: null, clearBonus: 0,
+    wave: 1, wavesCleared: 0, waveState: 'breather', breatherT: 2.0,
+  };
+}
+
+// Deal the next wave into the spawn queue (times are wave-relative in the
+// spec, so offset them from now) and retune the run to the wave's speed
+// and accent. Called when a breather ends.
+function startEndlessWave(run) {
+  const spec = endlessWaveSpec(run.wave, run.endlessSeed);
+  run.def.bulletSpeed = spec.bulletSpeed;
+  run.def.accent = spec.accent;
+  run.def.name = `Endless Drift — Wave ${run.wave}`;
+  run.spawnQueue = spec.spawns.map((s) => ({ ...s, t: s.t + run.time + 1.0 }));
+  run.waveState = 'fighting';
+  pushEvent(run, { type: 'wave-start', wave: run.wave, bulletSpeed: spec.bulletSpeed, spawns: spec.spawns.length, sourceSector: spec.sourceSector });
+}
 
 function spawnEnemy(run, def) {
   const t = ENEMY_TYPES[def.type];
@@ -742,6 +861,13 @@ export function stepRun(run, input = {}) {
   const p = run.player;
   run.time += DT;
 
+  // Endless Drift: between waves the arena breathes — no spawns, no
+  // win check — until the breather ends and the next wave is dealt.
+  if (run.mode === 'endless' && run.waveState === 'breather') {
+    run.breatherT -= DT;
+    if (run.breatherT <= 0) startEndlessWave(run);
+  }
+
   // Spawns.
   while (run.spawnQueue.length > 0 && run.spawnQueue[0].t <= run.time) {
     spawnEnemy(run, run.spawnQueue.shift());
@@ -851,6 +977,26 @@ export function stepRun(run, input = {}) {
     pushEvent(run, { type: 'lost', score: run.score, time: run.time });
     return;
   }
+  // Endless Drift: clearing a wave is not a clear — it is a breather,
+  // a wave bonus, and the next wave. The run ends only at hull 0.
+  if (run.mode === 'endless') {
+    if (run.waveState === 'fighting' && run.spawnQueue.length === 0 && run.enemies.length === 0) {
+      const clearedWave = run.wave;
+      run.wavesCleared = clearedWave;
+      run.wave = clearedWave + 1;
+      const bonus = ENDLESS_WAVE_BONUS * clearedWave;
+      run.score += bonus;
+      let hullBonus = 0;
+      if (ENDLESS_WAVE_HULL_BONUS > 0) {
+        hullBonus = Math.min(ENDLESS_WAVE_HULL_BONUS, HULL_MAX - p.hull);
+        p.hull += hullBonus;
+      }
+      run.waveState = 'breather';
+      run.breatherT = ENDLESS_WAVE_BREATHER;
+      pushEvent(run, { type: 'wave-clear', wave: clearedWave, bonus, hullBonus, score: run.score });
+    }
+    return;
+  }
   // Win: every spawn done and every enemy dead.
   if (run.spawnQueue.length === 0 && run.enemies.length === 0) {
     run.phase = 'clear';
@@ -869,26 +1015,70 @@ export function cloneRun(run) {
 }
 
 // --- saves ---------------------------------------------------------------
+// best[sectorId] = { score, time, hull, rank } — rank is the clear rank
+// (S/A/B from hull left). endless = { bestWave, bestScore } — the best
+// Endless Drift run, saved separately from the sector bests.
 export function defaultSave() {
-  return { version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 1, flash: true, muted: false, music: true } };
+  return {
+    version: SAVE_VERSION, best: {}, unlocked: 1,
+    endless: { bestWave: 0, bestScore: 0 },
+    settings: { shake: 1, flash: true, muted: false, music: true },
+  };
 }
 export function serializeSave(save) { return JSON.stringify(save); }
+// Migrate an old save in place: v1 saves from before M4 have no endless
+// field and no rank on their bests. A best without a rank gets one derived
+// from its stored hull; a best without a hull gets rank null (unknown,
+// not a lie — the badge simply does not show).
+function migrateBest(best) {
+  const out = {};
+  for (const [k, v] of Object.entries(best || {})) {
+    if (!v || typeof v !== 'object') continue;
+    out[k] = {
+      ...v,
+      rank: v.rank ?? (typeof v.hull === 'number' ? rankForHull(v.hull) : null),
+    };
+  }
+  return out;
+}
 export function parseSave(raw) {
   try {
     const s = JSON.parse(raw);
     if (!s || s.version !== SAVE_VERSION || typeof s.best !== 'object') return defaultSave();
-    return { ...defaultSave(), ...s, best: { ...s.best }, settings: { ...defaultSave().settings, ...(s.settings || {}) } };
+    const endless = s.endless && typeof s.endless === 'object'
+      ? { bestWave: s.endless.bestWave || 0, bestScore: s.endless.bestScore || 0 }
+      : { bestWave: 0, bestScore: 0 };
+    return {
+      ...defaultSave(), ...s,
+      best: migrateBest(s.best),
+      endless,
+      settings: { ...defaultSave().settings, ...(s.settings || {}) },
+    };
   } catch { return defaultSave(); }
 }
 export function recordBest(save, sectorId, score, time, hull) {
   const prev = save.best[sectorId];
   const better = !prev || score > prev.score;
-  if (better) save.best[sectorId] = { score, time: Math.round(time * 100) / 100, hull };
+  if (better) save.best[sectorId] = { score, time: Math.round(time * 100) / 100, hull, rank: rankForHull(hull) };
   if (save.unlocked < Math.min(SECTORS.length, sectorId + 1)) save.unlocked = Math.min(SECTORS.length, sectorId + 1);
   return better;
 }
 export function isSectorUnlocked(save, sectorId) { return sectorId <= (save.unlocked || 1); }
 export function bestFor(save, sectorId) { return save.best[sectorId] || null; }
+// Endless Drift unlocks by clearing Sector 1 — the core must be taught
+// first, and it is reachable in one session. (The ?endless=1 playtest
+// path bypasses this for the session only, like ?sector=N.)
+export function isEndlessUnlocked(save) { return (save.unlocked || 1) >= 2; }
+// Best Endless result: the highest wave reached wins; on a tie the
+// higher score wins. Returns true when the save improved.
+export function recordEndlessBest(save, wave, score) {
+  if (!save.endless) save.endless = { bestWave: 0, bestScore: 0 };
+  const prev = save.endless;
+  const better = wave > prev.bestWave || (wave === prev.bestWave && score > prev.bestScore);
+  if (better) save.endless = { bestWave: wave, bestScore: score };
+  return better;
+}
+export function bestEndless(save) { return save.endless || { bestWave: 0, bestScore: 0 }; }
 
 // --- bots ----------------------------------------------------------------
 // All bots play ONLY through the public stepRun input hooks — no peeking at
@@ -989,6 +1179,28 @@ export function simulateRun(sectorId, botFactory, opts = {}) {
   }
   return {
     won: run.phase === 'clear', lost: run.phase === 'lost',
+    time: run.time, score: run.score, hull: run.player.hull,
+    absorbs: run.absorbs, kills: run.kills, novas: run.novas, hits: run.hits,
+    maxCombo: run.maxCombo, steps, timedOut: run.phase === 'playing',
+  };
+}
+
+// Endless Drift simulation: the same bots, the same public input hooks,
+// playing waves until the hull gives out. wave = the wave the bot died
+// in (wavesCleared + 1); a bot that is still playing at the cap reports
+// timedOut with its current wave.
+export function simulateEndless(botFactory, opts = {}) {
+  const maxSteps = Math.round((opts.maxSeconds || 600) * 60);
+  const run = createEndlessRun({ seed: opts.seed });
+  const bot = botFactory();
+  let steps = 0;
+  while (run.phase === 'playing' && steps < maxSteps) {
+    stepRun(run, bot.input(run));
+    steps++;
+  }
+  return {
+    wave: run.wave, wavesCleared: run.wavesCleared,
+    lost: run.phase === 'lost',
     time: run.time, score: run.score, hull: run.player.hull,
     absorbs: run.absorbs, kills: run.kills, novas: run.novas, hits: run.hits,
     maxCombo: run.maxCombo, steps, timedOut: run.phase === 'playing',

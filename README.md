@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.3.0 — M3 feel & juice)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v0.4.0 — M4 progression & depth)
 
 ## How to play
 
@@ -23,6 +23,20 @@ The nova is your only weapon, and absorbing is the only way to earn one.
 Absorbing builds charge (+6 per bullet) and score (+10). A nova costs 65
 charge. Clearing a sector scores a time bonus plus a hull bonus. Your best
 score per sector is saved; clearing a sector unlocks the next.
+
+## Progression (M4)
+
+- **Clear rank** — finish a sector with 80+ hull for **S**, 50+ for **A**,
+  below that **B**. The rank shows on the sector card and on the clear
+  screen: the reason to replay a sector for a better result.
+- **Endless Drift** — unlocks after clearing Sector 1. Waves of bullet
+  patterns keep coming, built from the 12 sectors' patterns and seeded so
+  every run deals the same waves: each wave adds enemies and bullet speed
+  (capped so the storm stays readable), the polarity mix flips wave to
+  wave, and a 3-second breather sits between waves. The run ends at hull
+  0; your best wave and best score are saved separately and shown on the
+  menu and the end screen. No hull is restored between waves — a good run
+  earns its length.
 
 ## Sectors (12 hand-crafted)
 
@@ -68,6 +82,8 @@ Every sector is verified by bot harness (`node tests/bot.js`):
 - A **decision bot** that swaps polarity and novas with real decisions clears all 12 sectors.
 - A **no-swap bot** (same movement and nova play, never swaps) loses all 12.
 - A **sit-still bot** and a **random masher** lose all 12.
+- **Endless Drift:** the decision bot reaches wave 16; no-swap, sit-still
+  and random bots all die in wave 1.
 
 If a no-swap bot clears a sector, that sector is not done.
 
@@ -78,18 +94,22 @@ python3 -m http.server 8932   # then open http://localhost:8932/
 ```
 
 Playtest path: `?sector=3` jumps straight into sector 3, bypassing the
-unlock. It is deliberately not shown in the UI.
+unlock. `?endless=1` jumps straight into Endless Drift. Both are
+deliberately not shown in the UI.
 
 ## Tests
 
 ```sh
 node --check game.js && node --check physics.js
-npm run smoke        # 292 assertions: sectors, movement (screen-space),
+npm run smoke        # 396 assertions: sectors, movement (screen-space),
                      # swap, absorb, damage, nova, enemy fire, saves,
-                     # feedback tiers, nova-ready crossing, music setting
-npm run bot          # anti-slop gates on all 12 sectors
-npm run render-check # headless Chromium: menu, demo, screen-space movement,
-                     # swap, autopilot clear, pause, ?sector=3, zero console errors
+                     # feedback tiers, nova-ready crossing, music setting,
+                     # clear ranks, endless wave generation + run flow
+npm run bot          # anti-slop gates on all 12 sectors + endless drift
+npm run render-check # headless Firefox: menu, demo, screen-space movement,
+                     # swap, autopilot clear, pause, ?sector=3, ?endless=1,
+                     # endless locked/unlocked + wave 1 -> wave 2,
+                     # zero console errors
 npm run screenshots  # size sweep: 1280x720, 2560x1080, 1080x2340 (inspect by eye)
 ```
 

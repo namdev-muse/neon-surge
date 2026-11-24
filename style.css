@@ -131,6 +131,12 @@ html, body {
 .tagline { margin: 12px 0 4px; font-size: 17px; color: var(--text); }
 .menu-best { margin: 6px 0 20px; font-size: 14px; color: var(--dim); min-height: 20px; }
 .menu-actions { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+/* Endless Drift lock note: the reason the mode is locked, in plain sight
+   under its button — a locked mode must read as locked, never as a dead
+   button. When unlocked it carries the best Endless result instead. */
+.menu-note { display: inline-block; font-size: 13px; color: var(--dim); margin-top: -6px; }
+.menu-note.pulse { animation: note-pulse 0.5s ease; }
+@keyframes note-pulse { 0% { transform: scale(1); } 30% { transform: scale(1.08); color: var(--gold); } 100% { transform: scale(1); } }
 .menu-foot { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: center; }
 .keys-hint { font-size: 13px; color: var(--dim); }
 
@@ -155,6 +161,9 @@ html, body {
 .btn.danger { border-color: rgba(244, 114, 182, 0.6); color: var(--pink); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
 .btn:disabled:hover { transform: none; background: rgba(139, 92, 246, 0.14); box-shadow: none; }
+/* Locked mode button: dimmed but still clickable — the click answers with
+   a denied tick and pulses the lock note, so it never feels dead. */
+.btn.locked { opacity: 0.6; }
 
 /* ---------- Sector select ---------- */
 .levels-panel { max-width: 780px; width: min(94vw, 780px); }
@@ -176,6 +185,16 @@ html, body {
 .level-card.locked .level-name::after { content: " 🔒"; }
 .level-num { font-size: 12px; color: var(--accent, var(--violet)); font-weight: 800; letter-spacing: 0.2em; }
 .level-name { font-size: 17px; font-weight: 800; }
+/* Clear-rank badge: S gold, A cyan, B violet — the reason to replay a
+   sector for a better result. Only shown on cleared sectors. */
+.level-rank {
+  display: inline-block; font-size: 12px; font-weight: 900; line-height: 1.4;
+  border: 1.5px solid currentColor; border-radius: 6px; padding: 0 6px;
+  margin-left: 6px; vertical-align: middle;
+}
+.level-rank.rank-s { color: var(--gold); text-shadow: 0 0 8px rgba(251, 191, 36, 0.7); }
+.level-rank.rank-a { color: var(--cyan); }
+.level-rank.rank-b { color: var(--violet); }
 .level-meta { font-size: 13px; color: var(--dim); }
 
 /* ---------- How to / settings / complete ---------- */
@@ -194,6 +213,13 @@ html, body {
 .setting-row input[type="range"] { width: 180px; accent-color: var(--violet); }
 .setting-note { color: var(--dim); font-size: 13px; }
 .complete-best { color: var(--gold); font-weight: 800; font-size: 17px; min-height: 24px; margin: 0 0 12px; }
+/* Clear rank on the sector-clear screen: big, gold for S, cyan for A,
+   violet for B — the headline result of the run. */
+.complete-rank { font-size: 42px; font-weight: 900; letter-spacing: 0.12em; margin: 2px 0 8px; }
+.complete-rank:empty { display: none; }
+.complete-rank.rank-s { color: var(--gold); text-shadow: 0 0 22px rgba(251, 191, 36, 0.8); }
+.complete-rank.rank-a { color: var(--cyan); text-shadow: 0 0 22px rgba(34, 211, 238, 0.8); }
+.complete-rank.rank-b { color: var(--violet); text-shadow: 0 0 22px rgba(167, 139, 250, 0.8); }
 .complete-stats {
   display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center;
   font-size: 16px; font-weight: 700; margin-bottom: 20px;
