@@ -1,4 +1,4 @@
-// Neon Surge v0.4.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
+// Neon Surge v0.5.0 — 2D neon polarity bullet-hell arena (vanilla Canvas 2D).
 // Pilot a wisp; enemy bullets come in cyan and magenta. Match your polarity
 // to absorb bullets and build charge; opposite polarity damages your hull.
 // Charge powers a nova that clears the screen. Polarity is the skill:
@@ -28,9 +28,11 @@ const COLORS = {
 const POL_COLOR = { cyan: COLORS.cyan, magenta: COLORS.magenta };
 
 // ---------------------------------------------------------------- canvas
-let viewW = 0, viewH = 0, dpr = 1, view = { scale: 1, ox: 0, oy: 0 };
+let viewW = 0, viewH = 0, dpr = 1, dprCap = 2, view = { scale: 1, ox: 0, oy: 0 };
 function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // M5 FPS guard: dprCap drops to 1 when the frame rate stays low, so
+  // the canvas backing store shrinks instead of the game stuttering.
+  dpr = Math.min(window.devicePixelRatio || 1, dprCap);
   viewW = window.innerWidth; viewH = window.innerHeight;
   canvas.width = Math.round(viewW * dpr);
   canvas.height = Math.round(viewH * dpr);
@@ -181,8 +183,8 @@ let swapQueued = false, novaQueued = false;
 let drag = { active: false, id: null, x: 0, y: 0, startX: 0, startY: 0, startT: 0, moved: false };
 
 // Feel state (must return to rest values when idle — see __surge.feel()).
-let trauma = 0, hitStopT = 0, slowMoT = 0, timeScale = 1, flashT = 0, flashColor = COLORS.gold;
-let swapFlashT = 0, zoomT = 0, fpsEma = 60, lastTime = performance.now(), acc = 0;
+let trauma = 0, hitStopT = 0, slowMoT = 0, timeScale = 1, flashT = 0, flashMax = 0.3, flashColor = COLORS.gold;
+let swapFlashT = 0, zoomT = 0, fpsEma = 60, fpsLowT = 0, lastTime = performance.now(), acc = 0;
 let hullLowWarned = false, lastDeniedT = 0;
 let waveBanner = { text: '', t: 0 }; // M4: big centre banner ("WAVE 3", "WAVE 2 CLEAR") on Endless wave starts/clears
 
@@ -330,7 +332,7 @@ function startSector(id) {
   run = createRun(id);
   phase = 'playing';
   transitionT = null;
-  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; zoomT = 0;
+  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; flashMax = 0.3; zoomT = 0;
   hullLowWarned = false;
   for (const p of particles) p.alive = false;
   shockwaves.length = 0; pops.length = 0;
@@ -350,7 +352,7 @@ function startEndless() {
   run = createEndlessRun();
   phase = 'playing';
   transitionT = null;
-  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; zoomT = 0;
+  trauma = 0; hitStopT = 0; slowMoT = 0; timeScale = 1; flashT = 0; flashMax = 0.3; zoomT = 0;
   waveBanner = { text: '', t: 0 };
   hullLowWarned = false;
   for (const p of particles) p.alive = false;
@@ -388,11 +390,33 @@ function quitToMenu() {
   clearToast();
   goMenu();
 }
+// M5 persist-on-phase-flip (M4 live-playtest finding): the result used to
+// be recorded only in showEndScreen, 0.9s after the run ended — a reload
+// or navigation inside that death/clear transition lost the result
+// (reported as "?endless=1 results don't persist"). Record it the moment
+// the run phase flips to 'clear'/'lost', so the save is on disk before
+// the end screen ever shows. Sector losses record nothing (no best for
+// a loss); the guard makes a second call a no-op.
+function recordRunResult() {
+  if (!run || run._resultRecorded) return;
+  run._resultRecorded = true;
+  if (run.phase === 'clear') {
+    run._isBest = recordBest(save, run.sectorId, run.score, run.time, run.player.hull);
+    persistSave();
+  } else if (run.phase === 'lost' && run.mode === 'endless') {
+    run._isBest = recordEndlessBest(save, run.wave, run.score);
+    persistSave();
+  }
+}
 function showEndScreen() {
   if (!run) return;
   if (run.phase === 'clear') {
-    const isBest = recordBest(save, run.sectorId, run.score, run.time, run.player.hull);
-    persistSave();
+    // M5: the result was already recorded when the run phase flipped
+    // (recordRunResult) — reuse its isBest instead of re-recording,
+    // because a second recordBest call would report "not best" (the
+    // best is already this run's score by then).
+    const isBest = run._isBest ?? recordBest(save, run.sectorId, run.score, run.time, run.player.hull);
+    if (run._isBest === undefined) persistSave();
     phase = 'complete';
     $('complete-title').textContent = 'Sector Clear!';
     // M4: the clear rank is the headline — S/A/B from hull left.
@@ -414,8 +438,9 @@ function showEndScreen() {
     if (run.mode === 'endless') {
       // M4: an Endless run ends at hull 0 — the result is the wave
       // reached and the score, saved separately from the sector bests.
-      const isBest = recordEndlessBest(save, run.wave, run.score);
-      persistSave();
+      // M5: recorded at the phase flip (recordRunResult); reuse it.
+      const isBest = run._isBest ?? recordEndlessBest(save, run.wave, run.score);
+      if (run._isBest === undefined) persistSave();
       $('gameover-title').textContent = 'The Drift Ends';
       $('gameover-sub').textContent = isBest
         ? `New best — Wave ${run.wave} · ${run.score.toLocaleString()} points!`
@@ -445,7 +470,7 @@ const hudCache = {};
 function setText(id, value) {
   if (hudCache[id] !== value) { hudCache[id] = value; $(id).textContent = value; }
 }
-function updateHUD() {
+function updateHUD(dt) {
   if (!run || (phase !== 'playing' && phase !== 'pause')) return;
   const p = run.player;
   // M4: in Endless Drift the HUD carries the wave, not a sector name,
@@ -479,7 +504,10 @@ function updateHUD() {
     chip.textContent = p.pol === 'cyan' ? '◉ CYAN' : '◉ MAGENTA';
   }
   if (toastTimer > 0) {
-    toastTimer -= 1 / 60;
+    // M5: the toast timer decrements in REAL seconds (it used to tick
+    // 1/60 per frame, so toasts lingered past their stated time on
+    // slow devices — the M3 caveat).
+    toastTimer -= dt;
     if (toastTimer <= 0) clearToast();
   }
 }
@@ -498,6 +526,27 @@ function setFlash(on) {
   persistSave();
   const el = $('btn-flash-settings');
   if (el) el.textContent = on ? 'Flashing: On' : 'Flashing: Off';
+}
+// M5 accessibility: larger text + higher contrast, persisted in the
+// save like the other settings. Applied as body classes so every
+// panel, HUD label and button inherits them.
+function applyA11y() {
+  document.body.classList.toggle('text-large', save.settings.textSize === 'large');
+  document.body.classList.toggle('high-contrast', save.settings.contrast === true);
+  const ts = $('btn-textsize-settings');
+  if (ts) ts.textContent = save.settings.textSize === 'large' ? 'Text Size: Large' : 'Text Size: Normal';
+  const ct = $('btn-contrast-settings');
+  if (ct) ct.textContent = save.settings.contrast === true ? 'Contrast: High' : 'Contrast: Normal';
+}
+function setTextSize(size) {
+  save.settings.textSize = size === 'large' ? 'large' : 'normal';
+  persistSave();
+  applyA11y();
+}
+function setContrast(on) {
+  save.settings.contrast = !!on;
+  persistSave();
+  applyA11y();
 }
 
 // ---------------------------------------------------------------- input
@@ -602,7 +651,12 @@ function fireTier(ev, opts = {}) {
     timeScale = 0.35;
   }
   if (fb.layers.includes('flash')) {
-    flashT = Math.max(flashT, opts.flash ?? 0.3);
+    // M5: flash durations are REAL seconds now — flashT decays at 1/s
+    // and flashMax remembers the set duration so the fade is linear
+    // over the whole flash. (M3: flashT used to decay at 2.2/s, so a
+    // "0.3s" flash only showed for ~0.14s.)
+    const f = opts.flash ?? 0.3;
+    if (f > flashT) { flashT = f; flashMax = f; }
     flashColor = opts.flashColor || COLORS.gold;
   }
   if (fb.layers.includes('shockwave')) {
@@ -644,7 +698,9 @@ function handleEvents(runObj) {
         sfx.swap();
         break;
       case 'hit':
-        fireTier(ev, { flash: 0.22, flashColor: COLORS.red });
+        // M5: hit flash lengthened 0.22s -> 0.30s real — the M3 note that
+        // sub-second flashes were barely capturable in still frames.
+        fireTier(ev, { flash: 0.3, flashColor: COLORS.red });
         burst(ev.x, ev.y, COLORS.red, 14, 220, 3.5, 0.7);
         addPop(ev.x, ev.y - 16, `-${HIT_DAMAGE}`, COLORS.red);
         sfx.hit();
@@ -757,6 +813,38 @@ function drawBackground(t, accent) {
     ctx.fill();
   }
   ctx.restore();
+  // M5 portrait letterbox: the arena is centred, so tall (or very wide)
+  // screens get empty bands outside the arena rect — the world stars
+  // above only cover the arena. Scatter deterministic screen-space
+  // stars into the bands so they read as sky, not dead space.
+  if (view.oy > 8 || view.ox > 8) {
+    ctx.save();
+    ctx.fillStyle = '#c7d2fe';
+    for (let i = 0; i < 140; i++) {
+      const a = 0.2 + 0.35 * (0.5 + 0.5 * Math.sin(t * (0.6 + (i % 5) * 0.3) + i * 1.7));
+      ctx.globalAlpha = a;
+      let sx, sy;
+      if (i % 2 === 0 && view.oy > 8) {
+        // Top / bottom band.
+        sx = ((i * 7919) % 1000) / 1000 * viewW;
+        sy = i % 4 === 0
+          ? ((i * 104729) % 1000) / 1000 * view.oy
+          : viewH - view.oy + ((i * 104729) % 1000) / 1000 * view.oy;
+      } else if (view.ox > 8) {
+        // Left / right band (ultrawide).
+        sx = i % 4 < 2
+          ? ((i * 7919) % 1000) / 1000 * view.ox
+          : viewW - view.ox + ((i * 7919) % 1000) / 1000 * view.ox;
+        sy = ((i * 104729) % 1000) / 1000 * viewH;
+      } else {
+        continue;
+      }
+      ctx.beginPath();
+      ctx.arc(sx, sy, 0.8 + (i % 3) * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   // Arena grid + border.
   ctx.save();
   ctx.strokeStyle = 'rgba(167, 139, 250, 0.10)';
@@ -898,15 +986,40 @@ function drawPlayer(p, t) {
     ctx.beginPath(); ctx.arc(0, 0, (PLAYER_R + 6 + f * 26) * s, 0, Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 1;
   }
-  // Wisp: a glowing diamond with a bright core.
+  // Wisp: a sleek dart that points along its velocity (up when still),
+  // with a WHITE outline and a persistent thin white ring — never a
+  // diamond. M5 fix for the M4 live-playtest readability bug: the old
+  // wisp was a polarity-coloured diamond + white core + halo, exactly
+  // the weaver's silhouette (diamond + white core + halo, only bigger),
+  // so weavers kept being misread as the ship in a busy field. The
+  // dart + ring read as "you" at a glance in any colour, moving or not.
   const r = PLAYER_R * s;
-  const wob = 1 + 0.08 * Math.sin(t * 6);
+  const speed = Math.hypot(p.vx, p.vy);
+  const ang = speed > 20 ? Math.atan2(p.vy, p.vx) + Math.PI / 2 : 0;
+  ctx.save();
+  ctx.rotate(ang);
   ctx.fillStyle = col;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1.5, 2 * s);
   ctx.beginPath();
-  ctx.moveTo(0, -r * wob); ctx.lineTo(r * 0.7, 0); ctx.lineTo(0, r * wob); ctx.lineTo(-r * 0.7, 0);
-  ctx.closePath(); ctx.fill();
+  ctx.moveTo(0, -r * 1.3);
+  ctx.lineTo(r * 0.72, r * 0.55);
+  ctx.lineTo(0, r * 0.12);
+  ctx.lineTo(-r * 0.72, r * 0.55);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(0, 0, r * 0.32, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(0, -r * 0.1, r * 0.26, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // Persistent marker ring: thin white, always on — the charge arc is
+  // gold and thicker at a slightly larger radius, so the two never merge.
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1, 1.5 * s);
+  ctx.beginPath(); ctx.arc(0, 0, (PLAYER_R + 6) * s, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
   ctx.restore();
 }
 function drawRunEntities(r, t) {
@@ -990,9 +1103,10 @@ function render(now) {
     ctx.fillText(waveBanner.text, viewW / 2, viewH * 0.38);
     ctx.restore();
   }
-  // Flash overlay (respects the flashing toggle).
+  // Flash overlay (respects the flashing toggle). Alpha fades linearly
+  // over the flash's real duration: full at set, 0 at expiry.
   if (flashT > 0 && save.settings.flash !== false) {
-    ctx.globalAlpha = Math.min(0.45, flashT * 0.9);
+    ctx.globalAlpha = flashMax > 0 ? Math.min(0.45, 0.45 * (flashT / flashMax)) : 0;
     ctx.fillStyle = flashColor;
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.globalAlpha = 1;
@@ -1040,9 +1154,19 @@ function frame(now) {
   else timeScale = Math.min(1, timeScale + realDt * 2.5);
   simDt *= timeScale;
   trauma = Math.max(0, trauma - realDt * 1.6);
-  flashT = Math.max(0, flashT - realDt * 2.2);
+  // M5: flash decays in real seconds (1/s), not 2.2/s — see fireTier.
+  flashT = Math.max(0, flashT - realDt);
   zoomT = Math.max(0, zoomT - realDt * 1.2);
   waveBanner.t = Math.max(0, waveBanner.t - realDt);
+  // M5 FPS guard: if the frame rate stays under 28fps for 2s, drop the
+  // DPR cap to 1 (smaller backing store) and resize. One-way only —
+  // never oscillates back up mid-run.
+  if (fpsEma > 0 && fpsEma < 28) {
+    fpsLowT += realDt;
+    if (fpsLowT > 2 && dprCap > 1) { dprCap = 1; fpsLowT = 0; resize(); }
+  } else {
+    fpsLowT = 0;
+  }
 
   if (phase === 'playing' && run) {
     acc += simDt;
@@ -1058,7 +1182,10 @@ function frame(now) {
     if (Math.hypot(p.vx, p.vy) > 120 && Math.random() < 0.6) {
       spawnParticle(p.x - p.vx * 0.03, p.y - p.vy * 0.03, -p.vx * 0.05, -p.vy * 0.05, 0.35, 2.5, POL_COLOR[p.pol], 3);
     }
-    if (run.phase !== 'playing' && transitionT === null) transitionT = 0.9;
+    if (run.phase !== 'playing' && transitionT === null) {
+      recordRunResult();
+      transitionT = 0.9;
+    }
     if (transitionT !== null) {
       transitionT -= realDt;
       if (transitionT <= 0) { transitionT = null; showEndScreen(); }
@@ -1079,7 +1206,7 @@ function frame(now) {
   }
   updateParticles(realDt);
   render(now);
-  updateHUD();
+  updateHUD(realDt);
 }
 
 // ---------------------------------------------------------------- wiring + hooks
@@ -1116,6 +1243,8 @@ function bindUI() {
   $('btn-mute-hud').addEventListener('click', () => setMuted(!muted));
   $('btn-mute-settings').addEventListener('click', () => setMuted(!muted));
   $('btn-flash-settings').addEventListener('click', () => setFlash(save.settings.flash === false));
+  $('btn-textsize-settings').addEventListener('click', () => setTextSize(save.settings.textSize === 'large' ? 'normal' : 'large'));
+  $('btn-contrast-settings').addEventListener('click', () => setContrast(save.settings.contrast !== true));
   $('btn-music-settings').addEventListener('click', () => setMusic(!musicOn()));
   $('btn-pause').addEventListener('click', () => pauseGame());
   const shakeInput = $('setting-shake'), shakeVal = $('setting-shake-val');
@@ -1196,6 +1325,18 @@ window.__surge = {
   quitToMenu() { quitToMenu(); },
   setMuted(m) { setMuted(m); },
   setFlash(on) { setFlash(on); },
+  setTextSize(size) { setTextSize(size); },
+  setContrast(on) { setContrast(on); },
+  // M5: runs the same one-way FPS-guard path the frame loop takes after
+  // 2s under 28fps (drops the DPR cap to 1 and resizes).
+  triggerFpsGuard() { if (dprCap > 1) { dprCap = 1; resize(); } return dprCap; },
+  get dprCap() { return dprCap; },
+  // M5: fires a real hit flash through the normal feedback path so the
+  // render check can probe flash decay in real seconds.
+  debugFlash() { fireTier({ type: 'hit' }, { flash: 0.3, flashColor: COLORS.red }); },
+  // M5: shows a toast through the normal path so the render check can
+  // probe the toast timer in real seconds.
+  debugToast(text, ms) { toast(text, ms); },
   setShake(v) {
     save.settings.shake = clamp(Number(v), 0, 1);
     persistSave();
@@ -1215,7 +1356,8 @@ window.__surge = {
   // shake setting — 0 when the slider is at 0, whatever the trauma.
   feel() {
     return {
-      trauma, timeScale, hitStopT, slowMoT, flashT, swapFlashT, zoomT,
+      trauma, timeScale, hitStopT, slowMoT, flashT, flashMax, swapFlashT, zoomT,
+      dprCap,
       shakeAmp: trauma * trauma * 14 * (save.settings.shake ?? 1),
       shakeSetting: save.settings.shake ?? 1,
       flashEnabled: save.settings.flash !== false,
@@ -1234,6 +1376,7 @@ bindUI();
 updateMuteLabels();
 updateMusicLabels();
 setFlash(save.settings.flash !== false);
+applyA11y();
 refreshMenuBest();
 selectedSector = save.unlocked || 1;
 goMenu();
