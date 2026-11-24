@@ -1,4 +1,4 @@
-// Neon Surge v0.3.0 — headless browser render check.
+// Neon Surge v0.4.0 — headless browser render check.
 // Serves the game dir over local HTTP, loads it in a headless browser, and
 // asserts the M1 core, by hook and by eye:
 //   - the menu renders over a LIVE demo (the attract-mode bot actually
@@ -16,6 +16,11 @@
 //     and the shake slider gates the actual shake amplitude
 //   - pause focuses Resume; Enter resumes
 //   - ?sector=3 jumps straight into sector 3 (the playtest path)
+//   - M4: endless button locked with a reason on a fresh save (click
+//     answers, does not start); clear screen shows the rank badge;
+//     clearing sector 1 unlocks endless, which starts from the menu,
+//     banners WAVE 1, and advances to wave 2; ?endless=1 jumps in
+//     directly on a fresh save
 //   - feel state returns to rest (trauma 0, timeScale 1) when idle
 //   - zero console errors and zero page errors
 //
@@ -120,9 +125,25 @@ try {
     const b = document.getElementById('btn-play');
     return b && !b.classList.contains('hidden') && b.textContent.includes('Play');
   }));
-  check('no version text on the player-facing menu', !/v0\.3\.0|0\.3\.0/.test(menuText), menuText.slice(0, 200));
+  check('no version text on the player-facing menu', !/v0\.4\.0|0\.4\.0/.test(menuText), menuText.slice(0, 200));
   check('no engine text on the player-facing menu', !/three\.js|canvas 2d|webgl/i.test(menuText));
   check('menu lists 12 sectors', await page.evaluate(() => window.__surge.sectors().length === 12));
+  // M4: Endless Drift is locked on a fresh save — the button reads locked
+  // with the reason under it, and clicking it answers (denied tick +
+  // pulsing note) instead of starting a run or sitting dead.
+  check('endless button reads locked with a reason on a fresh save', await page.evaluate(() => {
+    const b = document.getElementById('btn-endless');
+    const note = document.getElementById('endless-note');
+    return b && b.classList.contains('locked') && b.textContent.includes('🔒')
+      && note && note.textContent === 'Clear Sector 1 to unlock Endless Drift'
+      && window.__surge.endlessUnlocked() === false;
+  }));
+  await page.click('#btn-endless');
+  await page.waitForTimeout(600);
+  check('clicking the locked endless button does not start a run (it answers, it is not dead)', await page.evaluate(() => {
+    return window.__surge.state.phase === 'menu'
+      && document.getElementById('endless-note').classList.contains('pulse');
+  }));
   // The demo behind the menu is actually playing: its clock advances and
   // the wisp drifts from its spawn point toward the middle of the arena.
   // (A fixed 2s position delta is flaky — the bot idles at the centre
@@ -222,7 +243,47 @@ try {
     return s.best && s.best[1] && s.best[1].score > 0;
   }));
   check('clearing sector 1 unlocks sector 2', await page.evaluate(() => window.__surge.save.unlocked >= 2));
+  // M4: the clear screen shows the clear rank (S/A/B from hull left) —
+  // the decision bot clears sector 1 untouched, so this is RANK S.
+  check('complete screen shows the clear rank badge', await page.evaluate(() => {
+    const el = document.getElementById('complete-rank');
+    return el && /^RANK [SAB]$/.test(el.textContent.trim());
+  }), await page.evaluate(() => document.getElementById('complete-rank').textContent));
   await page.click('#btn-complete-menu');
+  await page.waitForFunction(() => window.__surge.state.phase === 'menu', null, { timeout: 5000 });
+  // M4: clearing sector 1 unlocked Endless Drift — the button is no
+  // longer locked and the note carries the (empty) best result.
+  check('clearing sector 1 unlocks endless drift on the menu', await page.evaluate(() => {
+    const b = document.getElementById('btn-endless');
+    const note = document.getElementById('endless-note');
+    return window.__surge.endlessUnlocked() === true && !b.classList.contains('locked')
+      && b.textContent.includes('Endless Drift') && /no runs yet/.test(note.textContent);
+  }));
+  // M4: Endless starts from the menu button — the HUD shows the wave,
+  // the wave banner fires, and the autopilot plays wave 1 into wave 2.
+  await page.click('#btn-endless');
+  await page.waitForFunction(() => window.__surge.state.phase === 'playing', null, { timeout: 5000 });
+  check('endless starts from the menu button (mode endless, wave 1)', await page.evaluate(() => {
+    const s = window.__surge.state;
+    return s.mode === 'endless' && s.wave === 1 && s.sectorId === 0;
+  }), JSON.stringify(await page.evaluate(() => window.__surge.state)));
+  check('endless HUD shows the wave label', await page.evaluate(() => document.getElementById('hud-sector').textContent.includes('Wave 1')));
+  await page.waitForFunction(() => window.__surge.feel().waveBanner.text === 'WAVE 1', null, { timeout: 15000 });
+  check('wave banner fires on wave start (WAVE 1)', await page.evaluate(() => {
+    const wb = window.__surge.feel().waveBanner;
+    return wb.text === 'WAVE 1' && wb.t > 0;
+  }), JSON.stringify(await page.evaluate(() => window.__surge.feel().waveBanner)));
+  await page.evaluate(() => window.__surge.autopilot(true));
+  await page.waitForFunction(() => { const i = window.__surge.info(); return i.enemies > 0 && i.bullets > 0; }, null, { timeout: 30000 });
+  check('endless wave 1 spawns enemies and fires bullets', true);
+  await page.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, 'endless-1280x720.png') });
+  console.log('render-check: endless shot captured');
+  // Wave 1 is sector 1's pattern at speed 200 — the autopilot clears it
+  // in ~40s sim; reaching wave 2 proves the wave machine advances,
+  // not just starts.
+  await page.waitForFunction(() => window.__surge.info().wave >= 2, null, { timeout: 180000 });
+  check('endless advances to wave 2 after wave 1 clears', await page.evaluate(() => window.__surge.info().wave >= 2));
+  await page.evaluate(() => window.__surge.quitToMenu());
   await page.waitForFunction(() => window.__surge.state.phase === 'menu', null, { timeout: 5000 });
   // Feel state returns to rest once the game sits idle.
   await page.waitForTimeout(2500);
@@ -253,6 +314,24 @@ try {
   await page2.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, 'sector3-1280x720.png') });
   console.log('render-check: sector 3 shot captured');
   await context2.close();
+
+  // --- ?endless=1 playtest path --------------------------------------------
+  // A fresh profile: the lock is bypassed for the session only, like
+  // ?sector=N — the save stays locked (endlessUnlocked() false).
+  const contextE = await browser.newContext({ viewport: { width: 1280, height: 720 }, timezoneId: 'Asia/Bangkok' });
+  const pageE = await contextE.newPage();
+  pageE.on('console', (msg) => { if (msg.type() === 'error') errors.push(`endless console: ${msg.text()}`); });
+  pageE.on('pageerror', (err) => errors.push(`endless pageerror: ${String(err)}`));
+  await pageE.goto(`http://127.0.0.1:${port}/?endless=1`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await pageE.waitForFunction(() => window.__surge, null, { timeout: 30000 });
+  await pageE.waitForFunction(() => window.__surge.state.phase === 'playing', null, { timeout: 5000 });
+  check('?endless=1 jumps straight into endless drift on a fresh save (lock bypassed for the session)', await pageE.evaluate(() => {
+    const s = window.__surge.state;
+    return s.mode === 'endless' && s.wave === 1 && window.__surge.endlessUnlocked() === false;
+  }));
+  await pageE.waitForFunction(() => { const i = window.__surge.info(); return i.enemies > 0 && i.bullets > 0; }, null, { timeout: 30000 });
+  check('?endless=1 run spawns enemies and fires bullets', true);
+  await contextE.close();
 
   // --- M3: hit bundle + accessibility toggles (fresh run, no autopilot) --
   // An idle wisp in sector 1 takes a hit within seconds; the hit bundle
@@ -298,4 +377,4 @@ try {
 }
 
 if (failures.length > 0) { console.error(`render-check: ${failures.length} failure(s)`); process.exit(1); }
-console.log(`render-check: PASS — shots in ${SHOTS_DIR} — INSPECT BY EYE (menu, sectors, gameplay, sector 3)`);
+console.log(`render-check: PASS — shots in ${SHOTS_DIR} — INSPECT BY EYE (menu, sectors, gameplay, sector 3, endless)`);

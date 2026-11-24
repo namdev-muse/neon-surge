@@ -1,4 +1,4 @@
-// Neon Surge v0.3.0 — size sweep screenshots.
+// Neon Surge v0.4.0 — size sweep screenshots.
 // Serves the game dir over local HTTP and captures the menu + gameplay at
 // 1280x720, 2560x1080 and 1080x2340 (portrait). Inspect every shot by eye:
 // no clipped or overlapping elements, no cut-off text, HUD fits. The
@@ -90,6 +90,23 @@ try {
       deviceScaleFactor: size.deviceScaleFactor,
       timezoneId: 'Asia/Bangkok',
     });
+    // M4: seed a progressed save so the sweep exercises the new UI — rank
+    // badges on cleared sector cards, the unlocked Endless button with
+    // its best result on the menu. (Play then starts sector 12, the
+    // furthest unlocked — the autopilot plays it, as before.)
+    await context.addInitScript(() => {
+      localStorage.setItem('neon-surge-save-v1', JSON.stringify({
+        version: 1,
+        best: {
+          1: { score: 3663, time: 34.4, hull: 100, rank: 'S' },
+          5: { score: 5706, time: 41.6, hull: 85, rank: 'S' },
+          9: { score: 7366, time: 34.2, hull: 62, rank: 'A' },
+        },
+        unlocked: 12,
+        endless: { bestWave: 4, bestScore: 12345 },
+        settings: { shake: 1, flash: true, muted: false, music: true },
+      }));
+    });
     const page = await context.newPage();
     page.on('console', (msg) => { if (msg.type() === 'error') errors.push(`${size.name} console: ${msg.text()}`); });
     page.on('pageerror', (err) => errors.push(`${size.name} pageerror: ${String(err)}`));
@@ -121,7 +138,16 @@ try {
     // fine in the DOM, the shot was early (Flux lesson, 2026-11-22).
     await page.waitForTimeout(2500);
     await page.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, `sectors-${size.name}.png`) });
-    console.log(`size-sweep: ${size.name} captured (menu, gameplay, sectors)`);
+    // M4: Endless Drift gameplay at this size — the wave banner, the
+    // Endless HUD (wave label + best wave) and the bullet storm. The
+    // ?endless=1 path jumps straight in; the autopilot keeps the wisp
+    // alive through the slow screenshot readback.
+    await page.goto(`http://127.0.0.1:${port}/?endless=1`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(() => window.__surge.state.phase === 'playing', null, { timeout: 5000 });
+    await page.evaluate(() => window.__surge.autopilot(true));
+    await page.waitForFunction(() => { const i = window.__surge.info(); return i.enemies > 0 && i.bullets > 0; }, null, { timeout: 30000 });
+    await page.screenshot({ timeout: 300000, path: path.join(SHOTS_DIR, `endless-${size.name}.png`) });
+    console.log(`size-sweep: ${size.name} captured (menu, gameplay, sectors, endless)`);
     await context.close();
   }
   // Docs copies: the 1280x720 menu + gameplay shots illustrate the README.

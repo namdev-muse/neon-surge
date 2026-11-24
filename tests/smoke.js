@@ -1,4 +1,4 @@
-// Neon Surge v0.3.0 — Node smoke tests for physics.js (no DOM, no Canvas).
+// Neon Surge v0.4.0 — Node smoke tests for physics.js (no DOM, no Canvas).
 // Covers sector validity, movement (screen-space asserted — Drift M2
 // lesson), polarity swap, absorb/charge, hull damage, nova, enemy types,
 // sector clear/lose, saves, and the anti-slop gates on sector 1 (the full
@@ -11,9 +11,12 @@ import {
   HIT_DAMAGE, HIT_INVULN, CONTACT_DAMAGE, KILL_SCORE,
   ENEMY_TYPES, SPINNER_RING_COUNT, WEAVER_SPREAD_COUNT, SNIPER_TELEGRAPH, SURGE_WINDOW,
   FEEDBACK, FEEDBACK_TIERS, FEEDBACK_LAYERS, STREAK_MILESTONES,
-  SECTORS, sectorById, createRun, stepRun, drainEvents, cloneRun,
-  simulateRun, createDecisionBot, createNoSwapBot, createSitStillBot, createRandomBot,
-  defaultSave, serializeSave, parseSave, recordBest, isSectorUnlocked, bestFor,
+  SECTORS, sectorById, createRun, createEndlessRun, endlessWaveSpec,
+  rankForHull, stepRun, drainEvents, cloneRun,
+  simulateRun, simulateEndless, createDecisionBot, createNoSwapBot, createSitStillBot, createRandomBot,
+  defaultSave, serializeSave, parseSave, recordBest, recordEndlessBest,
+  isSectorUnlocked, isEndlessUnlocked, bestFor, bestEndless,
+  ENDLESS_BASE_SEED, ENDLESS_WAVE_BREATHER, ENDLESS_BULLET_SPEED_CAP, ENDLESS_WAVE_HULL_BONUS,
   SAVE_VERSION, mulberry32, clamp, worldToScreen,
 } from '../physics.js';
 
@@ -26,7 +29,7 @@ function check(name, cond, extra) {
 function approx(a, b, eps = 1e-6) { return Math.abs(a - b) <= eps; }
 
 console.log('smoke: version + sectors');
-check('physics version is 0.3.0', VERSION === '0.3.0');
+check('physics version is 0.4.0', VERSION === '0.4.0');
 check('12 sectors defined', SECTORS.length === 12);
 check('sector ids are 1..12 in order', SECTORS.every((s, i) => s.id === i + 1));
 check('every sector has a name, hint, par and accent', SECTORS.every((s) => s.name && s.hint && s.par > 0 && s.accent));
@@ -466,7 +469,7 @@ check('all feedback layers are named', FEEDBACK_LAYERS.every((l) => typeof l ===
 // an entry, every layer it names must exist, and every trauma/hit-stop
 // must sit inside its tier, or the renderer cannot fire the full bundle.
 {
-  const EMITTABLE = ['absorb', 'swap', 'hit', 'kill', 'nova', 'clear', 'lost', 'nova-ready', 'sniper-shot', 'sniper-aim', 'ring', 'spawn', 'telegraph'];
+  const EMITTABLE = ['absorb', 'swap', 'hit', 'kill', 'nova', 'clear', 'lost', 'nova-ready', 'sniper-shot', 'sniper-aim', 'ring', 'spawn', 'telegraph', 'wave-start', 'wave-clear'];
   check('every event the sim can emit has a FEEDBACK entry', EMITTABLE.every((t) => FEEDBACK[t]), EMITTABLE.filter((t) => !FEEDBACK[t]).join(','));
   check('every FEEDBACK layer is a named layer', Object.values(FEEDBACK).every((f) => f.layers.every((l) => FEEDBACK_LAYERS.includes(l))));
   check('small events sit in the small tier (trauma <= 0.20, no hit-stop)', ['absorb', 'swap', 'nova-ready'].every((t) => FEEDBACK[t].trauma <= 0.20 && FEEDBACK[t].hitStop === 0));
@@ -499,6 +502,131 @@ check('all feedback layers are named', FEEDBACK_LAYERS.every((l) => typeof l ===
 check('music defaults on', defaultSave().settings.music === true);
 check('an old save without a music setting gets music on', parseSave(JSON.stringify({ version: SAVE_VERSION, best: {}, unlocked: 1, settings: { shake: 0.5, flash: false, muted: true } })).settings.music === true);
 check('music setting survives a round trip', parseSave(serializeSave({ ...defaultSave(), settings: { ...defaultSave().settings, music: false } })).settings.music === false);
+// --- M4: clear ranks ---
+{
+  check('rank S at hull 80+', rankForHull(100) === 'S' && rankForHull(80) === 'S');
+  check('rank A at hull 50-79', rankForHull(79) === 'A' && rankForHull(50) === 'A');
+  check('rank B below hull 50', rankForHull(49) === 'B' && rankForHull(0) === 'B');
+  const save = defaultSave();
+  recordBest(save, 1, 3500, 39.0, 92);
+  check('recordBest stores the clear rank (hull 92 -> S)', save.best[1].rank === 'S', JSON.stringify(save.best[1]));
+  recordBest(save, 1, 4000, 35, 61);
+  check('a better score overwrites the rank too (hull 61 -> A)', save.best[1].rank === 'A');
+  // Migration: a pre-M4 best has a hull but no rank — derive it; a best
+  // with no hull at all gets rank null (unknown, not a lie).
+  const migrated = parseSave(JSON.stringify({ version: SAVE_VERSION, best: { 1: { score: 3500, time: 39, hull: 90 }, 2: { score: 100, time: 50 } }, unlocked: 3 }));
+  check('old save migrates a rank from its stored hull (90 -> S)', migrated.best[1].rank === 'S', JSON.stringify(migrated.best[1]));
+  check('old save without a hull migrates to rank null', migrated.best[2].rank === null, JSON.stringify(migrated.best[2]));
+  check('a ranked best survives a round trip', parseSave(serializeSave(migrated)).best[1].rank === 'S');
+}
+
+// --- M4: endless wave generation ---
+{
+  const w1a = endlessWaveSpec(1), w1b = endlessWaveSpec(1);
+  check('endless wave spec is deterministic (same wave + seed -> same wave)', JSON.stringify(w1a) === JSON.stringify(w1b));
+  check('endless wave spec differs across waves', JSON.stringify(endlessWaveSpec(1)) !== JSON.stringify(endlessWaveSpec(2)));
+  check('endless wave spec differs across seeds', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].some((w) => JSON.stringify(endlessWaveSpec(w, 7)) !== JSON.stringify(endlessWaveSpec(w, 8))), 'no wave differed between seeds 7 and 8');
+  check('endless wave 1 starts at bullet speed 200', endlessWaveSpec(1).bulletSpeed === 200, `${endlessWaveSpec(1).bulletSpeed}`);
+  check('endless bullet speed rises monotonically until the cap', (() => {
+    let prev = 0;
+    for (let w = 1; w <= 30; w++) {
+      const s = endlessWaveSpec(w).bulletSpeed;
+      if (s < prev) return false;
+      prev = s;
+    }
+    return true;
+  })());
+  check('endless bullet speed caps at 430 (readable, not a wall of light)', endlessWaveSpec(30).bulletSpeed === ENDLESS_BULLET_SPEED_CAP && endlessWaveSpec(26).bulletSpeed === 425,
+    `w26=${endlessWaveSpec(26).bulletSpeed} w30=${endlessWaveSpec(30).bulletSpeed}`);
+  check('endless enemy count rises monotonically until the cap', (() => {
+    let prev = 0;
+    for (let w = 1; w <= 30; w++) {
+      const n = endlessWaveSpec(w).spawns.length;
+      if (n < prev) return false;
+      prev = n;
+    }
+    return true;
+  })());
+  check('endless wave 1 deals the full sector 1 pattern (17 spawns)', endlessWaveSpec(1).spawns.length === 17, `${endlessWaveSpec(1).spawns.length} spawns`);
+  check('endless enemy count caps at 40', endlessWaveSpec(30).spawns.length === 40, `${endlessWaveSpec(30).spawns.length} spawns`);
+  check('endless waves cycle through all 12 sector patterns', new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((w) => endlessWaveSpec(w).sourceSector)).size === 12);
+  // Polarity mix: both polarities in every wave, the majority never over
+  // 65%, and the lean flips wave to wave (odd magenta, even cyan).
+  for (let w = 1; w <= 12; w++) {
+    const sp = endlessWaveSpec(w).spawns;
+    const mag = sp.filter((s) => s.pol === 'magenta').length;
+    const frac = mag / sp.length;
+    check(`endless wave ${w}: both polarities present, majority at most 65%`, mag >= 1 && mag < sp.length && frac <= 0.65 && frac >= 0.35, `magenta ${mag}/${sp.length}`);
+    check(`endless wave ${w}: lean flips by parity (${w % 2 === 1 ? 'magenta' : 'cyan'} majority)`, w % 2 === 1 ? frac >= 0.5 : frac <= 0.5, `magenta ${mag}/${sp.length}`);
+    check(`endless wave ${w}: spawn types are valid, hover points inside the arena`, sp.every((s) => ENEMY_TYPES[s.type] && s.hx >= 60 && s.hx <= ARENA_W - 60 && s.hy >= 50 && s.hy <= ARENA_H - 50));
+    check(`endless wave ${w}: spawns are sorted by time`, sp.every((s, i) => i === 0 || s.t >= sp[i - 1].t));
+    check(`endless wave ${w}: no telegraphs (sector tutorial text does not belong here)`, sp.every((s) => !s.telegraph));
+  }
+}
+
+// --- M4: endless run flow ---
+{
+  const run = createEndlessRun({ seed: 7 });
+  check('endless run starts in wave 1, breather, no spawns yet', run.mode === 'endless' && run.wave === 1 && run.waveState === 'breather' && run.spawnQueue.length === 0 && run.phase === 'playing');
+  check('endless run starts full hull, empty charge, cyan', run.player.hull === HULL_MAX && run.player.charge === 0 && run.player.pol === 'cyan');
+  // Step through the opening breather: wave 1 is dealt + a wave-start event.
+  for (let i = 0; i < Math.ceil((ENDLESS_WAVE_BREATHER - 0.5) / DT); i++) stepRun(run, {});
+  check('endless wave 1 starts after the breather (spawns queued, wave-start event)', run.waveState === 'fighting' && run.spawnQueue.length > 0 && drainEvents(run).some((e) => e.type === 'wave-start' && e.wave === 1));
+  check('endless wave 1 uses the wave-1 bullet speed', run.def.bulletSpeed === endlessWaveSpec(1).bulletSpeed, `${run.def.bulletSpeed}`);
+  // Force a wave clear: empty the queue, nova the field, and the run must
+  // breathe and deal wave 2 — NOT end in a sector clear.
+  const scoreBefore = run.score;
+  run.spawnQueue = [];
+  run.player.charge = CHARGE_MAX;
+  stepRun(run, { nova: true });
+  check('clearing an endless wave opens a breather, not a sector clear', run.phase === 'playing' && run.waveState === 'breather' && run.wave === 2 && run.wavesCleared === 1, `phase=${run.phase} wave=${run.wave} state=${run.waveState}`);
+  const clearEv = drainEvents(run).find((e) => e.type === 'wave-clear');
+  check('wave clear scores the wave bonus (250 x wave)', !!clearEv && clearEv.wave === 1 && clearEv.bonus === 250 && run.score === scoreBefore + 250, JSON.stringify(clearEv));
+  check('wave clear adds no hull without the hull bonus (M4: bonus stays 0)', run.player.hull === HULL_MAX && ENDLESS_WAVE_HULL_BONUS === 0);
+  // Step through the inter-wave breather: wave 2 is dealt.
+  for (let i = 0; i < Math.ceil((ENDLESS_WAVE_BREATHER + 0.2) / DT); i++) stepRun(run, {});
+  check('endless wave 2 is dealt after the breather', run.waveState === 'fighting' && run.wave === 2 && run.spawnQueue.length > 0);
+  check('endless wave 2 is faster than wave 1', run.def.bulletSpeed > endlessWaveSpec(1).bulletSpeed, `${run.def.bulletSpeed}`);
+  // Hull 0 ends an endless run (lost), even mid-breather.
+  run.spawnQueue = [];
+  run.enemies = [];
+  run.player.hull = 1; run.player.invuln = 0;
+  run.bullets.push({ x: run.player.x, y: run.player.y, vx: 0, vy: 0, pol: 'magenta', r: BULLET_R, age: 0 });
+  stepRun(run, {});
+  check('hull 0 ends an endless run (lost)', run.phase === 'lost');
+  check('endless loss emits a lost event', drainEvents(run).some((e) => e.type === 'lost'));
+  // A sector run is unaffected by the endless machine.
+  const srun = createRun(1);
+  check('sector runs still carry mode sector', srun.mode === 'sector');
+}
+
+// --- M4: endless saves + unlock ---
+{
+  const save = defaultSave();
+  check('default save has an empty endless best', save.endless.bestWave === 0 && save.endless.bestScore === 0);
+  check('endless is locked on a fresh save (sector 1 not cleared)', !isEndlessUnlocked(save));
+  recordBest(save, 1, 3500, 39.0, 100);
+  check('clearing sector 1 unlocks endless drift', isEndlessUnlocked(save));
+  check('bestEndless returns the stored endless best', bestEndless(save).bestWave === 0);
+  check('recordEndlessBest stores the first endless run', recordEndlessBest(save, 3, 5000) && save.endless.bestWave === 3 && save.endless.bestScore === 5000);
+  check('a shorter endless run does not overwrite the best', !recordEndlessBest(save, 2, 99999) && save.endless.bestWave === 3);
+  check('same wave, higher score overwrites', recordEndlessBest(save, 3, 6000) && save.endless.bestScore === 6000);
+  check('a higher wave overwrites even with a lower score', recordEndlessBest(save, 4, 100) && save.endless.bestWave === 4 && save.endless.bestScore === 100);
+  check('endless best survives a round trip', parseSave(serializeSave(save)).endless.bestWave === 4);
+  const old = parseSave(JSON.stringify({ version: SAVE_VERSION, best: {}, unlocked: 2, settings: { shake: 1, flash: true, muted: false, music: true } }));
+  check('old save without an endless field migrates to an empty best', old.endless.bestWave === 0 && old.endless.bestScore === 0);
+  check('old save with sector 1 cleared has endless unlocked', isEndlessUnlocked(old));
+  // Endless bot gates at the smoke level (the full gate lives in bot.js):
+  // the decision bot must play real polarity decisions and reach wave 4+;
+  // a bot that never swaps must die in wave 1-2.
+  const d = simulateEndless(createDecisionBot, { maxSeconds: 900 });
+  check('endless: decision bot reaches wave 4+ (real swap + nova play)', d.wave >= 4, `wave ${d.wave}${d.timedOut ? ' (still alive at cap)' : ''}`);
+  const n = simulateEndless(createNoSwapBot, { maxSeconds: 600 });
+  check('endless: no-swap bot dies in wave 1-2', n.lost && n.wave <= 2, `died wave ${n.wave} in ${n.time.toFixed(1)}s`);
+  const s = simulateEndless(createSitStillBot, { maxSeconds: 600 });
+  check('endless: sit-still bot dies in wave 1-2', s.lost && s.wave <= 2, `died wave ${s.wave} in ${s.time.toFixed(1)}s`);
+}
+
 check('DT is 1/60', approx(DT, 1 / 60));
 
 console.log(`smoke: ${passed} passed, ${failed} failed`);
