@@ -9,7 +9,7 @@ hull. Charge powers a **nova** that clears the screen and damages every
 enemy. Polarity is the skill: there is no auto-swap, no assist, and no gun.
 The nova is your only weapon, and absorbing is the only way to earn one.
 
-**Live:** https://namdev-muse.github.io/neon-surge/ (v0.5.0 — M5 polish & robustness)
+**Live:** https://namdev-muse.github.io/neon-surge/ (v1.0.0 — release)
 
 ## How to play
 
@@ -139,6 +139,37 @@ npm run render-check # headless Firefox: menu, demo, screen-space movement,
                      # FPS guard DPR drop, zero console errors
 npm run screenshots  # size sweep: 1280x720, 2560x1080, 1080x2340 (inspect by eye)
 ```
+
+## Release notes (v1.0.0)
+
+Built in a 12-hour milestone-driven sprint (2026-11-23 23:30 – 2026-11-24
+11:30 Asia/Bangkok), one milestone at a time, each shipped only after a
+real-browser playtest judged it fun. M1 core (3 sectors, polarity, nova)
+→ M2 twelve hand-crafted sectors → M3 feel & juice → M4 ranks + Endless
+Drift → M5 polish & robustness → M6 release. Every sector is gated by
+the bot harness above; the live build is the last version that passed
+its tests and playtests.
+
+Known issues (honest, none game-breaking):
+- Touch buttons (SWAP / NOVA) are verified by code and size sweep, not
+  yet on a real touch device — a desktop-browser report of missing
+  buttons in Sector 2 / Endless could not be reproduced from the
+  shipped code (visibility is gated identically in every mode).
+- Portrait HUD verified by 1080x2340 size-sweep screenshots only, not
+  on a real phone.
+- Music and SFX never got a human-ear check: the synth loop is
+  confirmed running by the render check, and a playtester heard
+  non-speech audio consistent with it, but nobody has listened
+  critically.
+- Endless Drift wave 2+, the wave-clear bonus and the 3.0s breather are
+  verified by the bot harness and render check only, not by a human
+  playthrough.
+- Sectors 5 and 9 were never played by a human (they unlock by
+  clearing the previous sector); the `?sector=N` path exists for
+  testing.
+- The CI deploy job fails on every push because Pages is
+  branch-sourced; the branch deploy still publishes (verified live
+  after every push).
 
 ## Tech
 
